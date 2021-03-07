@@ -447,8 +447,7 @@ let execute_free_ tenv mk ?(mark_as_freed = true) loc acc iter =
         in
         (* mark value as freed *)
         let p_res =
-          Attribute.add_or_replace_check_changed tenv Tabulation.check_attr_dealloc_mismatch prop
-            (Apred (Aresource ra, [lexp]))
+          Attribute.add_or_replace_check_changed tenv prop (Apred (Aresource ra, [lexp]))
         in
         p_res :: acc
       else prop :: acc
@@ -516,13 +515,6 @@ let execute_free mk ?(mark_as_freed = true)
   | _ ->
       raise (Exceptions.Wrong_argument_number __POS__)
 
-
-(* This is for objects of CoreFoundation and CoreGraphics that ned to be released.
- However, we want to treat them a bit differently to standard free; in particular we
- don't want to flag Use_after_free because they can be used after CFRelease. The main purpose
- of this builtin is to remove the memory attribute so that we don't report Memory Leaks.
- This should behave correctly most of the time. *)
-let execute_free_cf mk = execute_free mk ~mark_as_freed:false
 
 let execute_alloc mk can_return_null
     {Builtin.analysis_data= {tenv; _} as analysis_data; prop_; path; ret_id_typ; args; loc} :
@@ -617,8 +609,8 @@ let execute___cxx_typeid ({Builtin.analysis_data; prop_; args; loc} as r) : Buil
           let set_instr =
             Sil.Store
               { e1= field_exp
-              ; root_typ= Typ.void
-              ; typ= Typ.void
+              ; root_typ= StdTyp.void
+              ; typ= StdTyp.void
               ; e2= Exp.Const (Const.Cstr typ_string)
               ; loc }
           in
@@ -760,8 +752,8 @@ let execute___infer_fail {Builtin.analysis_data= {tenv} as analysis_data; prop_;
   let set_instr =
     Sil.Store
       { e1= Exp.Lvar Predicates.custom_error
-      ; root_typ= Typ.void
-      ; typ= Typ.void
+      ; root_typ= StdTyp.void
+      ; typ= StdTyp.void
       ; e2= Exp.Const (Const.Cstr error_str)
       ; loc }
   in
@@ -780,8 +772,8 @@ let execute___assert_fail {Builtin.analysis_data; prop_; path; args; loc} : Buil
   let set_instr =
     Sil.Store
       { e1= Exp.Lvar Predicates.custom_error
-      ; root_typ= Typ.void
-      ; typ= Typ.void
+      ; root_typ= StdTyp.void
+      ; typ= StdTyp.void
       ; e2= Exp.Const (Const.Cstr error_str)
       ; loc }
   in
@@ -794,7 +786,11 @@ let execute_objc_alloc_no_fail symb_state typ alloc_fun_opt {Builtin.analysis_da
   let ptr_typ = Typ.mk (Tptr (typ, Typ.Pk_pointer)) in
   let sizeof_typ = Exp.Sizeof {typ; nbytes= None; dynamic_length= None; subtype= Subtype.exact} in
   let alloc_fun_exp =
-    match alloc_fun_opt with Some pname -> [(Exp.Const (Const.Cfun pname), Typ.void)] | None -> []
+    match alloc_fun_opt with
+    | Some pname ->
+        [(Exp.Const (Const.Cfun pname), StdTyp.void)]
+    | None ->
+        []
   in
   let alloc_instr =
     Sil.Call (ret_id_typ, alloc_fun, [(sizeof_typ, ptr_typ)] @ alloc_fun_exp, loc, CallFlags.default)
@@ -806,12 +802,6 @@ let execute_objc_alloc_no_fail symb_state typ alloc_fun_opt {Builtin.analysis_da
 let execute_objc_NSArray_alloc_no_fail builtin_args symb_state pname =
   let ret_typ = snd builtin_args.Builtin.ret_id_typ in
   execute_objc_alloc_no_fail symb_state ret_typ (Some pname) builtin_args
-
-
-let execute_NSArray_arrayWithObjects_count builtin_args =
-  let n_formals = 1 in
-  let res = SymExec.check_variadic_sentinel ~fails_on_nil:true n_formals (0, 1) builtin_args in
-  execute_objc_NSArray_alloc_no_fail builtin_args res BuiltinDecl.nsArray_arrayWithObjectsCount
 
 
 let execute_NSArray_arrayWithObjects builtin_args =
@@ -864,7 +854,7 @@ let __delete_locked_attribute =
 
 let __exit = Builtin.register BuiltinDecl.__exit execute_exit
 
-let __free_cf = Builtin.register BuiltinDecl.__free_cf (execute_free_cf PredSymb.Mmalloc)
+let __objc_bridge_transfer = Builtin.register BuiltinDecl.__objc_bridge_transfer execute_skip
 
 (* return the length of the array passed as a parameter *)
 let __get_array_length = Builtin.register BuiltinDecl.__get_array_length execute___get_array_length
@@ -971,7 +961,13 @@ let nsArray_arrayWithObjects =
 
 
 let nsArray_arrayWithObjectsCount =
-  Builtin.register BuiltinDecl.nsArray_arrayWithObjectsCount execute_NSArray_arrayWithObjects_count
+  Builtin.register BuiltinDecl.nsArray_arrayWithObjectsCount execute_skip
+
+
+let objc_autorelease_pool_pop = Builtin.register BuiltinDecl.objc_autorelease_pool_pop execute_skip
+
+let objc_autorelease_pool_push =
+  Builtin.register BuiltinDecl.objc_autorelease_pool_push execute_skip
 
 
 (* model throwing exception in objc/c++ as divergence *)

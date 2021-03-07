@@ -6,35 +6,45 @@
 # LICENSE file in the root directory of this source tree.
 
 # wrap execution of sledge with time and memory limits
-# and add RESULT status to output in case of an unexpected exit
+# and add status entries to report in case of an unexpected exit
 
-# usage: wrap.sh <timeout(sec)> <memout(MB)> <command> <testdir/testname>
+# usage: wrap.sh <timeout(sec)> <memout(GB)> <command> <testdir/testname>
 
 set -u
 
 timeout=$1
-memout=$(( $2*1024 ))
+memout=$(( $2*1024*1024 ))
 command=${@: 3: $#-3}
 test=${@: -1}
 
-testdir=$(dirname $test)
-testname=$(basename $test)
+unknown_error () {
+  echo "((name $test)(entry(Status(UnknownError \"$1\"))))" >> $test.sexp
+}
 
-cd $testdir
+timeout () {
+  echo "((name $test)(entry(Status Timeout)))" >> $test.sexp
+}
+
+memout () {
+  echo "((name $test)(entry(Status Memout)))" >> $test.sexp
+}
+
 (
   ulimit -t $timeout -v $memout
-  $command $testname 1> $testname.out 2> $testname.err
-)
+  $command -report $test.sexp $test 1> $test.out 2> $test.err
+) &> /dev/null
 status=$?
+
 case $status in
-  ( 132 ) echo -e "RESULT: illegal instruction" >> $testname.out ;;
-  ( 136 ) echo -e "RESULT: floating-point exception" >> $testname.out ;;
-  ( 139 ) echo -e "RESULT: segmentation violation" >> $testname.out ;;
-  ( 127 ) echo -e "RESULT: MEMOUT" >> $testname.out ;;
-  ( 137 | 152 ) echo -e "RESULT: TIMEOUT" >> $testname.out ;;
-  ( * ) ;;
+  ( 0 | 1 ) ;;
+  ( 132 ) unknown_error "illegal instruction" ;;
+  ( 136 ) unknown_error "floating-point exception" ;;
+  ( 139 ) unknown_error "segmentation violation" ;;
+  ( 127 | 134 ) memout ;;
+  ( 137 | 152 ) timeout ;;
+  ( * ) unknown_error "exit $status" ;;
 esac
-if ! grep -q 'RESULT:' $testname.out; then
-  echo -e "RESULT: Internal error: "$status >> $testname.out
-fi
+
+(test -f $test.sexp && grep -q "Status" $test.sexp) || unknown_error "exit $status"
+
 exit $status

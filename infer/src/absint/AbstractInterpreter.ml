@@ -125,25 +125,16 @@ struct
           |> not )
 
 
-    (** Ignore states in [lhs] that are over-approximated in [rhs] and vice-versa. Favors keeping
-        states in [lhs]. *)
-    let join_up_to_imply lhs rhs =
-      let rev_rhs_not_in_lhs = rev_filter_not_over_approximated rhs ~not_in:lhs in
-      (* cheeky: this is only used in pulse, whose (<=) is actually a symmetric relation so there's
-         no need to filter out elements of [lhs] *)
-      List.rev_append rev_rhs_not_in_lhs lhs
-
-
     let join : t -> t -> t =
-     fun lhs rhs ->
-      if phys_equal lhs rhs then lhs
-      else
-        match DConfig.join_policy with
-        | `NeverJoin ->
-            List.rev_append rhs lhs
-        | `UnderApproximateAfter n ->
-            let lhs_length = List.length lhs in
-            if lhs_length >= n then lhs else List.rev_append rhs lhs
+      let rec list_rev_append l1 l2 n =
+        match l1 with hd :: tl when n > 0 -> list_rev_append tl (hd :: l2) (n - 1) | _ -> l2
+      in
+      fun lhs rhs ->
+        if phys_equal lhs rhs then lhs
+        else
+          let (`UnderApproximateAfter n) = DConfig.join_policy in
+          let lhs_length = List.length lhs in
+          if lhs_length >= n then lhs else list_rev_append rhs lhs (n - lhs_length)
 
 
     (** check if elements of [disj] appear in [of_] in the same order, using pointer equality on
@@ -161,6 +152,15 @@ struct
 
 
     let leq ~lhs ~rhs = phys_equal lhs rhs || is_trivial_subset lhs ~of_:rhs
+
+    (** Ignore states in [lhs] that are over-approximated in [rhs] and vice-versa. Favors keeping
+        states in [lhs]. *)
+    let join_up_to_imply lhs rhs =
+      let rev_rhs_not_in_lhs = rev_filter_not_over_approximated rhs ~not_in:lhs in
+      (* cheeky: this is only used in pulse, whose (<=) is actually a symmetric relation so there's
+         no need to filter out elements of [lhs] *)
+      join lhs rev_rhs_not_in_lhs
+
 
     let widen ~prev ~next ~num_iters =
       let (`UnderApproximateAfterNumIterations max_iter) = DConfig.widen_policy in
@@ -183,12 +183,20 @@ struct
 
   let exec_instr pre_disjuncts analysis_data node instr =
     List.foldi pre_disjuncts ~init:[] ~f:(fun i post_disjuncts pre_disjunct ->
-        L.d_printfln "@[<v2>Executing instruction from disjunct #%d@;" i ;
-        let disjuncts' = T.exec_instr pre_disjunct analysis_data node instr in
-        ( if Config.write_html then
-          let n = List.length disjuncts' in
-          L.d_printfln "@]@\n@[Got %d disjunct%s back@]" n (if Int.equal n 1 then "" else "s") ) ;
-        Domain.join post_disjuncts disjuncts' )
+        let should_skip =
+          let (`UnderApproximateAfter n) = DConfig.join_policy in
+          List.length post_disjuncts >= n
+        in
+        if should_skip then (
+          L.d_printfln "@[<v2>Reached max disjuncts limit, skipping disjunct #%d@;@]" i ;
+          post_disjuncts )
+        else (
+          L.d_printfln "@[<v2>Executing instruction from disjunct #%d@;" i ;
+          let disjuncts' = T.exec_instr pre_disjunct analysis_data node instr in
+          ( if Config.write_html then
+            let n = List.length disjuncts' in
+            L.d_printfln "@]@\n@[Got %d disjunct%s back@]" n (if Int.equal n 1 then "" else "s") ) ;
+          Domain.join post_disjuncts disjuncts' ) )
 
 
   let exec_node_instrs old_state_opt ~exec_instr pre instrs =
@@ -402,8 +410,7 @@ module AbstractInterpreterCommon (TransferFunctions : NodeTransferFunctions) = s
   (* shadowed for HTML debug *)
   let compute_pre cfg node inv_map =
     AnalysisCallbacks.html_debug_new_node_session (Node.underlying_node node) ~kind:`ComputePre
-      ~pp_name:(TransferFunctions.pp_session_name node) ~f:(fun () -> compute_pre cfg node inv_map
-    )
+      ~pp_name:(TransferFunctions.pp_session_name node) ~f:(fun () -> compute_pre cfg node inv_map)
 
 
   (** compute and return an invariant map for [pdesc] *)

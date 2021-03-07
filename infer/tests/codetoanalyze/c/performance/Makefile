@@ -7,11 +7,13 @@ TESTS_DIR = ../../..
 
 CLANG_OPTIONS = -c
 INFER_OPTIONS = --cost-only --bufferoverrun --debug-exceptions --project-root $(TESTS_DIR) \
-                --use-cost-threshold
+  --no-cost-suppress-func-ptr
 INFERPRINT_OPTIONS = --issues-tests
+INFERPRINT_COST_OPTIONS = --cost-issues-tests
 
 SOURCES = $(wildcard *.c)
 
 include $(TESTS_DIR)/clang.make
+include $(TESTS_DIR)/cost.make
 
 infer-out/report.json: $(MAKEFILE_LIST)

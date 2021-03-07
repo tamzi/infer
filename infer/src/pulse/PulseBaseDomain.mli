@@ -10,6 +10,7 @@ open PulseBasicInterface
 module F = Format
 
 type t = {heap: PulseBaseMemory.t; stack: PulseBaseStack.t; attrs: PulseBaseAddressAttributes.t}
+[@@deriving compare, equal, yojson_of]
 
 type cell = PulseBaseMemory.Edges.t * Attributes.t
 
@@ -18,6 +19,9 @@ val empty : t
 val reachable_addresses : t -> AbstractValue.Set.t
 (** compute the set of abstract addresses that are "used" in the abstract state, i.e. reachable from
     the stack variables *)
+
+val reachable_addresses_from : AbstractValue.t list -> t -> AbstractValue.Set.t
+(** compute the set of abstract addresses that are reachable from given abstract addresses *)
 
 type mapping
 
@@ -34,3 +38,5 @@ val is_isograph : lhs:t -> rhs:t -> mapping -> bool
 val find_cell_opt : AbstractValue.t -> t -> cell option
 
 val pp : F.formatter -> t -> unit
+
+val subst_var : AbstractValue.t * AbstractValue.t -> t -> t SatUnsat.t

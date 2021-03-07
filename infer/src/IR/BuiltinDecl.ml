@@ -15,7 +15,8 @@ let register pname = builtin_decls := Procname.Set.add pname !builtin_decls
 
 let create_procname name =
   let pname = Procname.from_string_c_fun name in
-  register pname ; pname
+  register pname ;
+  pname
 
 
 let create_objc_class_method class_name method_name parameters =
@@ -25,7 +26,8 @@ let create_objc_class_method class_name method_name parameters =
     Procname.ObjC_Cpp
       (Procname.ObjC_Cpp.make tname method_name method_kind Typ.NoTemplate parameters)
   in
-  register pname ; pname
+  register pname ;
+  pname
 
 
 let is_declared pname = Procname.Set.mem pname !builtin_decls
@@ -56,7 +58,7 @@ let __delete_locked_attribute = create_procname "__delete_locked_attribute"
 
 let __exit = create_procname "_exit"
 
-let __free_cf = create_procname "__free_cf"
+let __objc_bridge_transfer = create_procname "__objc_bridge_transfer"
 
 let __get_array_length = create_procname "__get_array_length"
 
@@ -152,6 +154,10 @@ let nsArray_arrayWithObjects =
 let nsArray_arrayWithObjectsCount =
   create_objc_class_method "NSArray" "arrayWithObjects:count:" [None; None]
 
+
+let objc_autorelease_pool_pop = create_procname "_objc_autoreleasePoolPop"
+
+let objc_autorelease_pool_push = create_procname "_objc_autoreleasePoolPush"
 
 let objc_cpp_throw = create_procname "__infer_objc_cpp_throw"
 

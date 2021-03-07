@@ -92,6 +92,19 @@ let get_method_body method_decl =
       raise CFrontend_errors.Invalid_declaration
 
 
+let is_cpp_lambda_call_operator meth_decl =
+  let open Clang_ast_t in
+  match meth_decl with
+  | CXXMethodDecl (di, _, _, _, _) -> (
+    match CAst_utils.get_decl_opt di.di_parent_pointer with
+    | Some (Clang_ast_t.CXXRecordDecl (_, _, _, _, _, _, _, cxx_rdi)) ->
+        Option.is_some cxx_rdi.xrdi_lambda_call_operator
+    | _ ->
+        false )
+  | _ ->
+      false
+
+
 let is_cpp_virtual method_decl =
   let open Clang_ast_t in
   match method_decl with
@@ -111,7 +124,9 @@ let get_init_list_instrs method_decl =
   | CXXConstructorDecl (_, _, _, _, mdi)
   | CXXConversionDecl (_, _, _, _, mdi)
   | CXXDestructorDecl (_, _, _, _, mdi) ->
-      let create_custom_instr construct_instr = `CXXConstructorInit construct_instr in
+      let create_custom_instr construct_instr =
+        CFrontend_config.CXXConstructorInit construct_instr
+      in
       List.map ~f:create_custom_instr mdi.xmdi_cxx_ctor_initializers
   | _ ->
       []
@@ -128,10 +143,6 @@ let get_pointer_to_property method_decl =
         None )
   | _ ->
       None
-
-
-let is_objc_method method_decl =
-  match method_decl with Clang_ast_t.ObjCMethodDecl _ -> true | _ -> false
 
 
 let is_no_return method_decl =

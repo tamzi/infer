@@ -86,7 +86,7 @@ val is_restrict : type_quals -> bool
 val is_volatile : type_quals -> bool
 
 (** types for sil (structured) expressions *)
-type t = {desc: desc; quals: type_quals} [@@deriving compare]
+type t = {desc: desc; quals: type_quals} [@@deriving compare, yojson_of]
 
 and desc =
   | Tint of ikind  (** integer type *)
@@ -98,21 +98,21 @@ and desc =
   | TVar of string  (** type variable (ie. C++ template variables) *)
   | Tarray of {elt: t; length: IntLit.t option; stride: IntLit.t option}
       (** array type with statically fixed length and stride *)
-[@@deriving compare]
 
 and name =
   | CStruct of QualifiedCppName.t
   | CUnion of QualifiedCppName.t
-  (* qualified name does NOT contain template arguments of the class. It will contain template
-     args of its parent classes, for example: MyClass<int>::InnerClass<int> will store
-     "MyClass<int>", "InnerClass" *)
-  | CppClass of QualifiedCppName.t * template_spec_info
+      (** qualified name does NOT contain template arguments of the class. It will contain template
+          args of its parent classes, for example: MyClass<int>::InnerClass<int> will store
+          "MyClass<int>", "InnerClass" *)
+  | CppClass of {name: QualifiedCppName.t; template_spec_info: template_spec_info; is_union: bool}
+  | CSharpClass of CSharpClassName.t
   | JavaClass of JavaClassName.t
-  | ObjcClass of QualifiedCppName.t
+  | ObjcClass of QualifiedCppName.t * name list
+      (** ObjC class that conforms to a list of protocols, e.g. id<NSFastEnumeration, NSCopying> *)
   | ObjcProtocol of QualifiedCppName.t
-[@@deriving compare]
 
-and template_arg = TType of t | TInt of Int64.t | TNull | TNullPtr | TOpaque [@@deriving compare]
+and template_arg = TType of t | TInt of Int64.t | TNull | TNullPtr | TOpaque
 
 and template_spec_info =
   | NoTemplate
@@ -122,7 +122,6 @@ and template_spec_info =
                 mangling is not guaranteed to be unique to a single type. All the information in the
                 template arguments is also needed for uniqueness. *)
       ; args: template_arg list }
-[@@deriving compare]
 
 val pp_template_spec_info : Pp.env -> F.formatter -> template_spec_info -> unit [@@warning "-32"]
 
@@ -139,34 +138,6 @@ val mk_struct : name -> t
 val mk_ptr : ?ptr_kind:ptr_kind -> t -> t
 (** make a pointer to [t], default kind is [Pk_pointer] *)
 
-val void : t
-(** void type *)
-
-val java_char : t
-
-val java_byte : t
-
-val java_short : t
-
-val boolean : t
-
-val char : t
-
-val int : t
-(** signed int type *)
-
-val uint : t
-(** unsigned int type *)
-
-val long : t
-
-val float : t
-
-val double : t
-
-val void_star : t
-(** void* type *)
-
 val get_ikind_opt : t -> ikind option
 (** Get ikind if the type is integer. *)
 
@@ -179,7 +150,10 @@ val is_strong_pointer : t -> bool
 
 module Name : sig
   (** Named types. *)
-  type t = name [@@deriving compare]
+  type t = name [@@deriving compare, yojson_of]
+
+  val loose_compare : t -> t -> int
+  (** Similar to compare, but addresses [CStruct x] and [CppClass x] as equal. *)
 
   val equal : t -> t -> bool
   (** Equality for typenames *)
@@ -220,6 +194,10 @@ module Name : sig
     val union_from_qual_name : QualifiedCppName.t -> t
   end
 
+  module CSharp : sig
+    val from_string : string -> t
+  end
+
   module Java : sig
     val from_string : string -> t
     (** Create a typename from a Java classname in the form "package.class" *)
@@ -238,20 +216,10 @@ module Name : sig
 
     val is_anonymous_inner_class_name_opt : t -> bool option
     (** return None if it is not a Java class *)
-
-    val java_lang_object : t
-
-    val java_io_serializable : t
-
-    val java_lang_cloneable : t
-
-    val java_lang_class : t
-
-    val java_lang_string : t
   end
 
   module Cpp : sig
-    val from_qual_name : template_spec_info -> QualifiedCppName.t -> t
+    val from_qual_name : template_spec_info -> is_union:bool -> QualifiedCppName.t -> t
     (** Create a typename from a C++ classname *)
 
     val is_class : t -> bool
@@ -270,6 +238,8 @@ module Name : sig
   module Set : PrettyPrintable.PPSet with type elt = t
 
   module Map : PrettyPrintable.PPMap with type key = t
+
+  module Normalizer : HashNormalizer.S with type t = t
 end
 
 val equal : t -> t -> bool
@@ -290,7 +260,20 @@ val pp_full : Pp.env -> F.formatter -> t -> unit
 val pp : Pp.env -> F.formatter -> t -> unit
 (** Pretty print a type. *)
 
+val pp_desc : Pp.env -> F.formatter -> desc -> unit
+(** Pretty print a type desc. *)
+
+val pp_java : verbose:bool -> F.formatter -> t -> unit
+(** Pretty print a Java type. Raises if type isn't produced by the Java frontend *)
+
+val pp_cs : verbose:bool -> F.formatter -> t -> unit
+(** Pretty print a Java type. Raises if type isn't produced by the CSharp frontend *)
+
+val pp_protocols : Pp.env -> F.formatter -> name list -> unit
+
 val to_string : t -> string
+
+val desc_to_string : desc -> string
 
 val d_full : t -> unit
 (** Dump a type with all the details. *)
@@ -317,11 +300,15 @@ val is_cpp_class : t -> bool
 
 val is_pointer_to_cpp_class : t -> bool
 
+val is_pointer_to_objc_non_tagged_class : t -> bool
+
 val is_pointer_to_void : t -> bool
 
 val is_void : t -> bool
 
 val is_pointer_to_int : t -> bool
+
+val is_pointer_to_function : t -> bool
 
 val is_pointer : t -> bool
 
@@ -335,8 +322,17 @@ val is_unsigned_int : t -> bool
 
 val is_char : t -> bool
 
+val is_csharp_type : t -> bool
+(** is [t] a type produced by the Java frontend? *)
+
+val is_java_primitive_type : t -> bool
+(** is [t] a primitive type produced by the Java frontend? *)
+
+val is_java_type : t -> bool
+(** is [t] a type produced by the Java frontend? *)
+
 val has_block_prefix : string -> bool
 
 val unsome : string -> t option -> t
 
-type typ = t
+module Normalizer : HashNormalizer.S with type t = t

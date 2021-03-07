@@ -10,7 +10,7 @@ module F = Format
 
 (** Single abstraction for all the kinds of variables in SIL *)
 
-type t = LogicalVar of Ident.t | ProgramVar of Pvar.t [@@deriving compare]
+type t = LogicalVar of Ident.t | ProgramVar of Pvar.t [@@deriving compare, yojson_of]
 
 let equal = [%compare.equal: t]
 
@@ -88,9 +88,7 @@ let get_footprint_index t =
 
 
 module Map = PrettyPrintable.MakePPMap (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 
   let pp = pp
 end)

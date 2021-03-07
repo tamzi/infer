@@ -55,21 +55,6 @@ let hpred_is_open_resource tenv prop = function
       None
 
 
-(** Explain a deallocate stack variable error *)
-let explain_deallocate_stack_var pvar ra =
-  let pvar_str = Pvar.to_string pvar in
-  Localise.desc_deallocate_stack_variable pvar_str ra.PredSymb.ra_pname ra.PredSymb.ra_loc
-
-
-(** Explain a deallocate constant string error *)
-let explain_deallocate_constant_string s ra =
-  let const_str =
-    let pp fmt = Exp.pp fmt (Exp.Const (Const.Cstr s)) in
-    F.asprintf "%t" pp
-  in
-  Localise.desc_deallocate_static_memory const_str ra.PredSymb.ra_pname ra.PredSymb.ra_loc
-
-
 let verbose = Config.trace_error
 
 (** Special case for C++, where we translate code like [struct X; X getX() { X x; return X; }] as
@@ -165,7 +150,10 @@ and exp_lv_dexp_ tenv (seen_ : Exp.Set.t) node e : DExp.t option =
     let seen = Exp.Set.add e seen_ in
     match Prop.exp_normalize_noabs tenv Predicates.sub_empty e with
     | Exp.Const c ->
-        if verbose then (L.d_str "exp_lv_dexp: constant " ; Exp.d_exp e ; L.d_ln ()) ;
+        if verbose then (
+          L.d_str "exp_lv_dexp: constant " ;
+          Exp.d_exp e ;
+          L.d_ln () ) ;
         Some (DExp.Dderef (DExp.Dconst c))
     | Exp.BinOp (Binop.PlusPI, e1, e2) -> (
         if verbose then (
@@ -225,7 +213,9 @@ and exp_lv_dexp_ tenv (seen_ : Exp.Set.t) node e : DExp.t option =
             Some (DExp.Darrow (de, f)) )
     | Exp.Lfield (e1, f, _) -> (
         if verbose then (
-          L.d_str "exp_lv_dexp: Lfield " ; Exp.d_exp e1 ; L.d_printfln " %a" Fieldname.pp f ) ;
+          L.d_str "exp_lv_dexp: Lfield " ;
+          Exp.d_exp e1 ;
+          L.d_printfln " %a" Fieldname.pp f ) ;
         match exp_lv_dexp_ tenv seen node e1 with
         | None ->
             None
@@ -233,7 +223,11 @@ and exp_lv_dexp_ tenv (seen_ : Exp.Set.t) node e : DExp.t option =
             Some (DExp.Ddot (de, f)) )
     | Exp.Lindex (e1, e2) -> (
         if verbose then (
-          L.d_str "exp_lv_dexp: Lindex " ; Exp.d_exp e1 ; L.d_str " " ; Exp.d_exp e2 ; L.d_ln () ) ;
+          L.d_str "exp_lv_dexp: Lindex " ;
+          Exp.d_exp e1 ;
+          L.d_str " " ;
+          Exp.d_exp e2 ;
+          L.d_ln () ) ;
         match (exp_lv_dexp_ tenv seen node e1, exp_rv_dexp_ tenv seen node e2) with
         | None, _ ->
             None
@@ -261,7 +255,10 @@ and exp_rv_dexp_ tenv (seen_ : Exp.Set.t) node e : DExp.t option =
     let seen = Exp.Set.add e seen_ in
     match e with
     | Exp.Const c ->
-        if verbose then (L.d_str "exp_rv_dexp: constant " ; Exp.d_exp e ; L.d_ln ()) ;
+        if verbose then (
+          L.d_str "exp_rv_dexp: constant " ;
+          Exp.d_exp e ;
+          L.d_ln () ) ;
         Some (DExp.Dconst c)
     | Exp.Lvar pv ->
         if verbose then (
@@ -279,7 +276,9 @@ and exp_rv_dexp_ tenv (seen_ : Exp.Set.t) node e : DExp.t option =
         find_normal_variable_load_ tenv seen node id
     | Exp.Lfield (e1, f, _) -> (
         if verbose then (
-          L.d_str "exp_rv_dexp: Lfield " ; Exp.d_exp e1 ; L.d_printfln " %a" Fieldname.pp f ) ;
+          L.d_str "exp_rv_dexp: Lfield " ;
+          Exp.d_exp e1 ;
+          L.d_printfln " %a" Fieldname.pp f ) ;
         match exp_rv_dexp_ tenv seen node e1 with
         | None ->
             None
@@ -287,31 +286,47 @@ and exp_rv_dexp_ tenv (seen_ : Exp.Set.t) node e : DExp.t option =
             Some (DExp.Ddot (de, f)) )
     | Exp.Lindex (e1, e2) -> (
         if verbose then (
-          L.d_str "exp_rv_dexp: Lindex " ; Exp.d_exp e1 ; L.d_str " " ; Exp.d_exp e2 ; L.d_ln () ) ;
+          L.d_str "exp_rv_dexp: Lindex " ;
+          Exp.d_exp e1 ;
+          L.d_str " " ;
+          Exp.d_exp e2 ;
+          L.d_ln () ) ;
         match (exp_rv_dexp_ tenv seen node e1, exp_rv_dexp_ tenv seen node e2) with
         | None, _ | _, None ->
             None
         | Some de1, Some de2 ->
             Some (DExp.Darray (de1, de2)) )
     | Exp.BinOp (op, e1, e2) -> (
-        if verbose then (L.d_str "exp_rv_dexp: BinOp " ; Exp.d_exp e ; L.d_ln ()) ;
+        if verbose then (
+          L.d_str "exp_rv_dexp: BinOp " ;
+          Exp.d_exp e ;
+          L.d_ln () ) ;
         match (exp_rv_dexp_ tenv seen node e1, exp_rv_dexp_ tenv seen node e2) with
         | None, _ | _, None ->
             None
         | Some de1, Some de2 ->
             Some (DExp.Dbinop (op, de1, de2)) )
     | Exp.UnOp (op, e1, _) -> (
-        if verbose then (L.d_str "exp_rv_dexp: UnOp " ; Exp.d_exp e ; L.d_ln ()) ;
+        if verbose then (
+          L.d_str "exp_rv_dexp: UnOp " ;
+          Exp.d_exp e ;
+          L.d_ln () ) ;
         match exp_rv_dexp_ tenv seen node e1 with
         | None ->
             None
         | Some de1 ->
             Some (DExp.Dunop (op, de1)) )
     | Exp.Cast (_, e1) ->
-        if verbose then (L.d_str "exp_rv_dexp: Cast " ; Exp.d_exp e ; L.d_ln ()) ;
+        if verbose then (
+          L.d_str "exp_rv_dexp: Cast " ;
+          Exp.d_exp e ;
+          L.d_ln () ) ;
         exp_rv_dexp_ tenv seen node e1
     | Exp.Sizeof {typ; dynamic_length; subtype} ->
-        if verbose then (L.d_str "exp_rv_dexp: type " ; Exp.d_exp e ; L.d_ln ()) ;
+        if verbose then (
+          L.d_str "exp_rv_dexp: type " ;
+          Exp.d_exp e ;
+          L.d_ln () ) ;
         Some
           (DExp.Dsizeof (typ, Option.bind dynamic_length ~f:(exp_rv_dexp_ tenv seen node), subtype))
     | _ ->
@@ -327,26 +342,6 @@ let find_normal_variable_load tenv = find_normal_variable_load_ tenv Exp.Set.emp
 let exp_lv_dexp tenv = exp_lv_dexp_ tenv Exp.Set.empty
 
 let exp_rv_dexp tenv = exp_rv_dexp_ tenv Exp.Set.empty
-
-(** Produce a description of a mismatch between an allocation function and a deallocation function *)
-let explain_allocation_mismatch ra_alloc ra_dealloc =
-  let get_primitive_called is_alloc ra =
-    (* primitive alloc/dealloc function ultimately used, and function actually called  *)
-    (* e.g. malloc and my_malloc *)
-    let primitive =
-      match ra.PredSymb.ra_res with
-      | PredSymb.Rmemory mk_alloc ->
-          (if is_alloc then PredSymb.mem_alloc_pname else PredSymb.mem_dealloc_pname) mk_alloc
-      | _ ->
-          ra_alloc.PredSymb.ra_pname
-    in
-    let called = ra.PredSymb.ra_pname in
-    (primitive, called, ra.PredSymb.ra_loc)
-  in
-  Localise.desc_allocation_mismatch
-    (get_primitive_called true ra_alloc)
-    (get_primitive_called false ra_dealloc)
-
 
 (** check whether the type of leaked [hpred] appears as a predicate in an inductive predicate in
     [prop] *)
@@ -494,26 +489,30 @@ let explain_leak tenv hpred prop alloc_att_opt bucket =
           L.d_ln () ) ;
         value_str_from_pvars_vpath [] vpath
   in
-  let exn_cat, bucket =
+  let is_user_visible, bucket =
     (* decide whether Exn_user or Exn_developer *)
     match resource_opt with
     | Some _ ->
         (* we know it has been allocated *)
-        (Exceptions.Exn_user, bucket)
+        (true, bucket)
     | None ->
         if leak_from_list_abstraction hpred prop && Option.is_some value_str then
           (* we don't know it's been allocated,
              but it's coming from list abstraction and we have a name *)
-          (Exceptions.Exn_user, bucket)
-        else (Exceptions.Exn_developer, Some Mleak_buckets.ml_bucket_unknown_origin)
+          (true, bucket)
+        else (false, Some Mleak_buckets.ml_bucket_unknown_origin)
   in
-  (exn_cat, Localise.desc_leak hpred_typ_opt value_str resource_opt res_action_opt loc bucket)
+  ( is_user_visible
+  , Localise.desc_leak hpred_typ_opt value_str resource_opt res_action_opt loc bucket )
 
 
 (** find the dexp, if any, where the given value is stored also return the type of the value if
     found *)
 let vpath_find tenv prop exp_ : DExp.t option * Typ.t option =
-  if verbose then (L.d_str "in vpath_find exp:" ; Exp.d_exp exp_ ; L.d_ln ()) ;
+  if verbose then (
+    L.d_str "in vpath_find exp:" ;
+    Exp.d_exp exp_ ;
+    L.d_ln () ) ;
   let rec find sigma_acc sigma_todo exp =
     let do_fse res sigma_acc' sigma_todo' lexp texp (f, se) =
       match se with
@@ -614,7 +613,12 @@ let vpath_find tenv prop exp_ : DExp.t option * Typ.t option =
         L.d_ln ()
     | Some de, typo -> (
         L.d_printf "vpath_find: found %a :" DExp.pp de ;
-        match typo with None -> L.d_str " No type" | Some typ -> Typ.d_full typ ; L.d_ln () ) ) ;
+        match typo with
+        | None ->
+            L.d_str " No type"
+        | Some typ ->
+            Typ.d_full typ ;
+            L.d_ln () ) ) ;
   res
 
 
@@ -657,7 +661,8 @@ let explain_dexp_access prop dexp is_nullable =
       | _ ->
           ()
     in
-    List.iter ~f:do_hpred sigma ; !res
+    List.iter ~f:do_hpred sigma ;
+    !res
   in
   let rec lookup_fld fsel f =
     match fsel with
@@ -1093,43 +1098,6 @@ let explain_condition_always_true_false tenv i cond node loc =
     match exp_rv_dexp tenv node cond with Some de -> Some (DExp.to_string de) | None -> None
   in
   Localise.desc_condition_always_true_false i cond_str_opt loc
-
-
-(** explain the escape of a stack variable address from its scope *)
-let explain_stack_variable_address_escape loc pvar addr_dexp_opt =
-  let addr_dexp_str =
-    match addr_dexp_opt with
-    | Some (DExp.Dpvar pv)
-      when Pvar.is_local pv && Mangled.equal (Pvar.get_name pv) Ident.name_return ->
-        Some "the caller via a return"
-    | Some dexp ->
-        Some (DExp.to_string dexp)
-    | None ->
-        None
-  in
-  Localise.desc_stack_variable_address_escape pvar addr_dexp_str loc
-
-
-(** explain unary minus applied to unsigned expression *)
-let explain_unary_minus_applied_to_unsigned_expression tenv exp typ node loc =
-  let exp_str_opt =
-    match exp_rv_dexp tenv node exp with Some de -> Some (DExp.to_string de) | None -> None
-  in
-  let typ_str =
-    let pp fmt = Typ.pp_full Pp.text fmt typ in
-    F.asprintf "%t" pp
-  in
-  Localise.desc_unary_minus_applied_to_unsigned_expression exp_str_opt typ_str loc
-
-
-(** explain a test for NULL of a dereferenced pointer *)
-let explain_null_test_after_dereference tenv exp node line loc =
-  match exp_rv_dexp tenv node exp with
-  | Some de ->
-      let expr_str = DExp.to_string de in
-      Localise.desc_null_test_after_dereference expr_str line loc
-  | None ->
-      Localise.no_desc
 
 
 let warning_err loc fmt_string =

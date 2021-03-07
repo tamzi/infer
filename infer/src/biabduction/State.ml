@@ -85,7 +85,10 @@ let instrs_normalize instrs =
   in
   let subst =
     let count = ref Int.min_value in
-    let gensym id = incr count ; Ident.set_stamp id !count in
+    let gensym id =
+      incr count ;
+      Ident.set_stamp id !count
+    in
     Predicates.subst_of_list (List.rev_map ~f:(fun id -> (id, Exp.Var (gensym id))) bound_ids)
   in
   let subst_and_add acc instr = Predicates.instr_sub subst instr :: acc in
@@ -241,7 +244,7 @@ let process_execution_failures (log_issue : log_issue) =
     match (fs.node_ok, fs.first_failure) with
     | 0, Some (loc, node, _, loc_trace, exn) when not Config.debug_exceptions ->
         let error = Exceptions.recognize_exception exn in
-        let desc' = Localise.verbatim_desc ("exception: " ^ error.name.IssueType.unique_id) in
+        let desc' = Localise.verbatim_desc ("exception: " ^ error.issue_type.unique_id) in
         let exn' = Exceptions.Analysis_stops (desc', error.ocaml_pos) in
         log_issue ~loc ~node ~ltr:loc_trace exn'
     | _ ->

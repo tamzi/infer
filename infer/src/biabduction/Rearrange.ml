@@ -55,7 +55,7 @@ let check_bad_index {InterproceduralAnalysis.proc_desc; err_log; tenv} pname p l
         Exceptions.Array_out_of_bounds_l1
           (Errdesc.explain_array_access pname tenv deref_str p loc, __POS__)
       in
-      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning exn
+      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn
     else if len_is_constant then
       let deref_str = Localise.deref_str_array_bound len_const_opt index_const_opt in
       let desc = Errdesc.explain_array_access pname tenv deref_str p loc in
@@ -63,13 +63,17 @@ let check_bad_index {InterproceduralAnalysis.proc_desc; err_log; tenv} pname p l
         if index_has_bounds () then Exceptions.Array_out_of_bounds_l2 (desc, __POS__)
         else Exceptions.Array_out_of_bounds_l3 (desc, __POS__)
       in
-      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning exn
+      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn
 
 
 (** Perform bounds checking *)
 let bounds_check analysis_data pname prop len e =
   if Config.trace_rearrange then (
-    L.d_str "Bounds check index:" ; Exp.d_exp e ; L.d_str " len: " ; Exp.d_exp len ; L.d_ln () ) ;
+    L.d_str "Bounds check index:" ;
+    Exp.d_exp e ;
+    L.d_str " len: " ;
+    Exp.d_exp len ;
+    L.d_ln () ) ;
   check_bad_index analysis_data pname prop len e
 
 
@@ -86,7 +90,10 @@ let rec create_struct_values analysis_data pname tenv orig_prop footprint_part k
     Predicates.d_offset_list off ;
     L.d_ln () ;
     L.d_ln () ) ;
-  let new_id () = incr max_stamp ; Ident.create kind !max_stamp in
+  let new_id () =
+    incr max_stamp ;
+    Ident.create kind !max_stamp
+  in
   let res =
     let fail t off pos =
       L.d_str "create_struct_values type:" ;
@@ -190,7 +197,10 @@ let rec create_struct_values analysis_data pname tenv orig_prop footprint_part k
     function. *)
 let rec strexp_extend_values_ analysis_data pname tenv orig_prop footprint_part kind max_stamp se
     (typ : Typ.t) (off : Predicates.offset list) inst =
-  let new_id () = incr max_stamp ; Ident.create kind !max_stamp in
+  let new_id () =
+    incr max_stamp ;
+    Ident.create kind !max_stamp
+  in
   match (off, se, typ.desc) with
   | [], Predicates.Eexp _, _ | [], Predicates.Estruct _, _ ->
       [([], se, typ)]
@@ -428,7 +438,7 @@ let strexp_extend_values analysis_data pname tenv orig_prop footprint_part kind 
     | Exp.Sizeof sizeof_data ->
         sizeof_data
     | _ ->
-        {Exp.typ= Typ.void; nbytes= None; dynamic_length= None; subtype= Subtype.exact}
+        {Exp.typ= StdTyp.void; nbytes= None; dynamic_length= None; subtype= Subtype.exact}
   in
   List.map
     ~f:(fun (atoms', se', typ') ->
@@ -460,7 +470,13 @@ let mk_ptsto_exp_footprint analysis_data pname tenv orig_prop (lexp, typ) max_st
       raise (Exceptions.Dangling_pointer_dereference (false, err_desc, __POS__)) ) ;
   let off_foot, eqs = laundry_offset_for_footprint max_stamp off in
   let subtype =
-    match !Language.curr_language with Clang -> Subtype.exact | Java -> Subtype.subtypes
+    match !Language.curr_language with
+    | Clang ->
+        Subtype.exact
+    | Java ->
+        Subtype.subtypes
+    | CIL ->
+        Subtype.subtypes
   in
   let create_ptsto footprint_part off0 =
     match (root, off0, typ.Typ.desc) with
@@ -954,62 +970,6 @@ let iter_rearrange_pe_dllseg_last tenv recurse_on_iters default_case_iter iter p
   recurse_on_iters iter_subcases
 
 
-(** find the type at the offset from the given type expression, if any *)
-let type_at_offset tenv texp off =
-  let rec strip_offset (off : Predicates.offset list) (typ : Typ.t) =
-    match (off, typ.desc) with
-    | [], _ ->
-        Some typ
-    | Off_fld (f, _) :: off', Tstruct name -> (
-      match Tenv.lookup tenv name with
-      | Some {fields} -> (
-        match List.find ~f:(fun (f', _, _) -> Fieldname.equal f f') fields with
-        | Some (_, typ', _) ->
-            strip_offset off' typ'
-        | None ->
-            None )
-      | None ->
-          None )
-    | Off_index _ :: off', Tarray {elt= typ'} ->
-        strip_offset off' typ'
-    | _ ->
-        None
-  in
-  match texp with Exp.Sizeof {typ} -> strip_offset off typ | _ -> None
-
-
-(** Check that the size of a type coming from an instruction does not exceed the size of the type
-    from the pointsto predicate For example, that a pointer to int is not used to assign to a char *)
-let check_type_size {InterproceduralAnalysis.proc_desc; err_log; tenv} pname prop texp off
-    typ_from_instr =
-  L.d_strln ~color:Orange "check_type_size" ;
-  L.d_str "off: " ;
-  Predicates.d_offset_list off ;
-  L.d_ln () ;
-  L.d_str "typ_from_instr: " ;
-  Typ.d_full typ_from_instr ;
-  L.d_ln () ;
-  match type_at_offset tenv texp off with
-  | Some typ_of_object ->
-      L.d_str "typ_o: " ;
-      Typ.d_full typ_of_object ;
-      L.d_ln () ;
-      if
-        Prover.type_size_comparable typ_from_instr typ_of_object
-        && not (Prover.check_type_size_leq typ_from_instr typ_of_object)
-      then
-        let deref_str = Localise.deref_str_pointer_size_mismatch typ_from_instr typ_of_object in
-        let loc = AnalysisState.get_loc_exn () in
-        let exn =
-          Exceptions.Pointer_size_mismatch
-            (Errdesc.explain_dereference pname tenv deref_str prop loc, __POS__)
-        in
-        BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning
-          exn
-  | None ->
-      L.d_str "texp: " ; Exp.d_texp_full texp ; L.d_ln ()
-
-
 (** Exposes lexp |->- from iter. In case that it is not possible to * expose lexp |->-, this
     function prints an error message and * faults. There are four things to note. First, typ is the
     type of the * root of lexp. Second, prop should mean the same as iter. Third, the * result []
@@ -1105,8 +1065,7 @@ let rec iter_rearrange analysis_data pname tenv lexp typ_from_instr prop iter in
         [default_case_iter iter]
     | Some iter -> (
       match Prop.prop_iter_current tenv iter with
-      | Predicates.Hpointsto (_, _, texp), off ->
-          if Config.type_size then check_type_size analysis_data pname prop texp off typ_from_instr ;
+      | Predicates.Hpointsto (_, _, _), _ ->
           iter_rearrange_ptsto analysis_data pname tenv prop iter lexp inst
       | Predicates.Hlseg (Lseg_NE, para, e1, e2, elist), _ ->
           iter_rearrange_ne_lseg tenv recurse_on_iters iter para e1 e2 elist
@@ -1282,10 +1241,6 @@ let check_dereference_error tenv pdesc (prop : Prop.normal Prop.t) lexp loc =
       raise (Exceptions.Dangling_pointer_dereference (true, err_desc, __POS__))
   | Some (Apred (Aundef _, _)) ->
       ()
-  | Some (Apred (Aresource ({ra_kind= Rrelease} as ra), _)) ->
-      let deref_str = Localise.deref_str_freed ra in
-      let err_desc = Errdesc.explain_dereference pname tenv ~use_buckets:true deref_str prop loc in
-      raise (Exceptions.Biabd_use_after_free (err_desc, __POS__))
   | _ ->
       if Prover.check_equal tenv Prop.prop_emp (Exp.root_of_lexp root) Exp.minus_one then
         let deref_str = Localise.deref_str_dangling None in
@@ -1340,7 +1295,9 @@ let check_call_to_objc_block_error tenv pdesc prop fun_exp loc =
     | Some (_, Exp.Lvar pvar) ->
         (* pvar is the block *)
         let name = Pvar.get_name pvar in
-        List.exists ~f:(fun (cn, _) -> Mangled.equal name cn) (Procdesc.get_captured pdesc)
+        List.exists
+          ~f:(fun {CapturedVar.name= cn} -> Mangled.equal name cn)
+          (Procdesc.get_captured pdesc)
     | _ ->
         false
   in

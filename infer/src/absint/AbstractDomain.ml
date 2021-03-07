@@ -11,7 +11,7 @@ module F = Format
 module Types = struct
   type 'astate bottom_lifted = Bottom | NonBottom of 'astate
 
-  type 'astate top_lifted = Top | NonTop of 'astate
+  type 'astate top_lifted = Top | NonTop of 'astate [@@deriving equal]
 
   type ('below, 'astate, 'above) below_above = Below of 'below | Above of 'above | Val of 'astate
 end
@@ -733,6 +733,18 @@ struct
 
 
   let mem k m = M.mem k m
+
+  let fold f (m : t) acc =
+    M.fold (fun key values acc -> S.fold (fun v acc -> f key v acc) values acc) m acc
+
+
+  let filter f m =
+    M.filter_map
+      (fun key values ->
+        let res = S.filter (fun elt -> f key elt) values in
+        if S.is_empty res then None else Some res )
+      m
+
 
   let remove k v m =
     M.update k

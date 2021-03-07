@@ -20,6 +20,15 @@ val string_crc_hex32 : string -> string
 val read_file : string -> (string list, string) Result.t
 (** read a source file and return a list of lines *)
 
+val normalize_path_from : root:string -> string -> string * string
+(** [normalize_path_from ~root path] removes ".." and "." parts of [root/path] when possible and
+    returns the new [root] and [path], eg if [root = "r"] and [path = "a/../../../foo/./bar"] then
+    the result is [("../foo/bar", ".")] (in particular "r/a/../../../foo/./bar" and "./../foo/bar"
+    represent the same file) *)
+
+val normalize_path : string -> string
+(** Normalize a path without a root *)
+
 val filename_to_absolute : root:string -> string -> string
 (** Convert a filename to an absolute one if it is relative, and normalize "." and ".." *)
 
@@ -57,17 +66,6 @@ val with_file_in : string -> f:(In_channel.t -> 'a) -> 'a
 
 val with_file_out : string -> f:(Out_channel.t -> 'a) -> 'a
 
-type file_lock =
-  { file: string
-  ; oc: Stdlib.out_channel
-  ; fd: Core.Unix.File_descr.t
-  ; lock: unit -> unit
-  ; unlock: unit -> unit }
-
-val create_file_lock : unit -> file_lock
-
-val with_file_lock : file_lock:file_lock -> f:(unit -> 'a) -> 'a
-
 val with_intermediate_temp_file_out : string -> f:(Out_channel.t -> 'a) -> 'a
 (** like [with_file_out] but uses a fresh intermediate temporary file and rename to avoid
     write-write races *)
@@ -98,11 +96,6 @@ val realpath : ?warn_on_error:bool -> string -> string
 val suppress_stderr2 : ('a -> 'b -> 'c) -> 'a -> 'b -> 'c
 (** wraps a function expecting 2 arguments in another that temporarily redirects stderr to /dev/null
     for the duration of the function call *)
-
-val compare_versions : string -> string -> int
-(** [compare_versions v1 v2] returns 1 if v1 is newer than v2, -1 if v1 is older than v2 and 0 if
-    they are the same version. The versions are strings of the shape "n.m.t", the order is
-    lexicographic. *)
 
 val rmtree : string -> unit
 (** [rmtree path] removes [path] and, if [path] is a directory, recursively removes its contents *)

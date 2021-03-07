@@ -486,10 +486,10 @@ let typ_get_recursive_flds tenv typ_exp =
       | Some {fields} ->
           List.map ~f:fst3 (List.filter ~f:(filter typ) fields)
       | None ->
-          L.(debug Analysis Quiet)
-            "@\ntyp_get_recursive_flds: unexpected %a unknown struct type: %a@." Exp.pp typ_exp
+          L.(debug Analysis Verbose)
+            "@\ntyp_get_recursive_flds: unexpected %a unknown struct type: %a@\n" Exp.pp typ_exp
             Typ.Name.pp name ;
-          [] (* ToDo: assert false *) )
+          [] )
     | Tint _ | Tvoid | Tfun | Tptr _ | Tfloat _ | Tarray _ | TVar _ ->
         [] )
   | Exp.Var _ ->
@@ -560,7 +560,8 @@ let discover_para_candidates tenv p =
         get_edges_sigma sigma_rest
     | Predicates.Hpointsto (root, se, te) :: sigma_rest ->
         let rec_flds = typ_get_recursive_flds tenv te in
-        get_edges_strexp rec_flds root se ; get_edges_sigma sigma_rest
+        get_edges_strexp rec_flds root se ;
+        get_edges_sigma sigma_rest
   in
   let rec find_all_consecutive_edges found edges_seen = function
     | [] ->
@@ -610,7 +611,8 @@ let discover_para_dll_candidates tenv p =
         get_edges_sigma sigma_rest
     | Predicates.Hpointsto (root, se, te) :: sigma_rest ->
         let rec_flds = typ_get_recursive_flds tenv te in
-        get_edges_strexp rec_flds root se ; get_edges_sigma sigma_rest
+        get_edges_strexp rec_flds root se ;
+        get_edges_sigma sigma_rest
   in
   let rec find_all_consecutive_edges found edges_seen = function
     | [] ->
@@ -859,7 +861,8 @@ let abs_rules_apply_lists tenv (p_in : Prop.normal Prop.t) : Prop.normal Prop.t 
   let p1 = abs_rules_apply_rsets tenv old_rsets p_in in
   let p2 = discover_then_abstract p1 in
   let new_rules = old_rsets @ !new_rsets in
-  set_current_rules new_rules ; p2
+  set_current_rules new_rules ;
+  p2
 
 
 let abs_rules_apply tenv (p_in : Prop.normal Prop.t) : Prop.normal Prop.t =
@@ -1065,7 +1068,8 @@ let check_junk {InterproceduralAnalysis.proc_desc; err_log; tenv} prop =
                     | _ ->
                         () ) )
               in
-              List.iter ~f:do_entry entries ; !res
+              List.iter ~f:do_entry entries ;
+              !res
             in
             L.d_decrease_indent () ;
             let is_undefined =
@@ -1104,7 +1108,7 @@ let check_junk {InterproceduralAnalysis.proc_desc; err_log; tenv} prop =
                 when Language.curr_language_is Clang ->
                   (is_none ml_bucket_opt, exn_leak)
               | Some _, Rmemory _ ->
-                  (Language.curr_language_is Java, exn_leak)
+                  (Language.curr_language_is Java || Language.curr_language_is CIL, exn_leak)
               | Some _, Rignore ->
                   (true, exn_leak)
               | Some _, Rfile ->
@@ -1112,7 +1116,7 @@ let check_junk {InterproceduralAnalysis.proc_desc; err_log; tenv} prop =
               | Some _, Rlock ->
                   (false, exn_leak)
               | _ ->
-                  (Language.curr_language_is Java, exn_leak)
+                  (Language.curr_language_is Java || Language.curr_language_is CIL, exn_leak)
             in
             let already_reported () =
               let attr_opt_equal ao1 ao2 =
@@ -1133,13 +1137,13 @@ let check_junk {InterproceduralAnalysis.proc_desc; err_log; tenv} prop =
               || already_reported ()
             in
             let report_and_continue =
-              Language.curr_language_is Java || !BiabductionConfig.footprint
+              Language.curr_language_is Java || Language.curr_language_is CIL
+              || !BiabductionConfig.footprint
             in
             let report_leak () =
               if not report_and_continue then raise exn
               else (
-                BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log
-                  Exceptions.Error exn ;
+                BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn ;
                 leaks_reported := alloc_attribute :: !leaks_reported )
             in
             if not ignore_leak then report_leak () ;

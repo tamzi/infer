@@ -47,25 +47,27 @@ module Partition = struct
         (fold_heads [@tailcall]) next ~init ~f
 
 
-  let rec expand ~fold_right partition =
-    match partition with
-    | Empty ->
-        Empty
-    | Node {node; next} ->
-        let init = expand ~fold_right next in
-        fold_right node ~init ~f:prepend_node
-    | Component {head; rest; next} -> (
-        let next = expand ~fold_right next in
-        let init = expand ~fold_right rest in
-        match fold_right head ~init ~f:prepend_node with
-        | Empty | Component _ ->
-            (* [fold_right] is expected to always provide a non-empty sequence.
-               Hence the result of [fold_right ~f:prepend_node] will always start with a Node. *)
-            Logging.(die InternalError)
-              "WeakTopologicalOrder.Partition.expand: the expansion function fold_right should not \
-               return ~init directly"
-        | Node {node= head; next= rest} ->
-            Component {head; rest; next} )
+  let expand ~fold_right partition =
+    let rec expand_aux ~cb = function
+      | Empty ->
+          cb Empty
+      | Node {node; next} ->
+          (expand_aux [@tailcall]) next ~cb:(fun init ->
+              fold_right node ~init ~f:prepend_node |> cb )
+      | Component {head; rest; next} ->
+          (expand_aux [@tailcall]) next ~cb:(fun next ->
+              (expand_aux [@tailcall]) rest ~cb:(fun init ->
+                  match fold_right head ~init ~f:prepend_node with
+                  | Empty | Component _ ->
+                      (* [fold_right] is expected to always provide a non-empty sequence.  Hence the
+                         result of [fold_right ~f:prepend_node] will always start with a Node. *)
+                      Logging.(die InternalError)
+                        "WeakTopologicalOrder.Partition.expand: the expansion function fold_right \
+                         should not return ~init directly"
+                  | Node {node= head; next= rest} ->
+                      cb (Component {head; rest; next}) ) )
+    in
+    expand_aux ~cb:IStd.ident partition
 
 
   let rec pp ~prefix ~pp_node fmt = function
@@ -111,10 +113,10 @@ module type Make = functor (CFG : PreProcCfg) -> S with module CFG = CFG
 module Bourdoncle_SCC (CFG : PreProcCfg) = struct
   module CFG = CFG
 
-  module Dfn = CFG.Node.IdMap
   (** [dfn] contains a DFS pre-order indexing. A node is not in the map if it has never been
       visited. A node's dfn is +oo if it has been fully visited (head of cross-edges) or we want to
       hide it for building a subcomponent partition (head of highest back-edges). *)
+  module Dfn = CFG.Node.IdMap
 
   (*
     Unlike Bourdoncle's paper version or OCamlGraph implementation, this implementation handles

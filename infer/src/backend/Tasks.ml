@@ -9,8 +9,6 @@ open! IStd
 
 type ('a, 'b) doer = 'a -> 'b option
 
-let fork_protect ~f x = BackendStats.reset () ; ForkUtils.protect ~f x
-
 let with_new_db_connection ~f () =
   ResultsDatabase.new_database_connection () ;
   f ()
@@ -19,15 +17,15 @@ let with_new_db_connection ~f () =
 module Runner = struct
   type ('work, 'final, 'result) t = ('work, 'final, 'result) ProcessPool.t
 
-  let create ~jobs ~f ~child_epilogue ~tasks =
+  let create ~jobs ~child_prologue ~f ~child_epilogue ~tasks =
     PerfEvent.(
       log (fun logger -> log_begin_event logger ~categories:["sys"] ~name:"fork prepare" ())) ;
     ResultsDatabase.db_close () ;
     let pool =
       ProcessPool.create ~jobs ~f ~child_epilogue ~tasks:(with_new_db_connection ~f:tasks)
-        ~child_prelude:
-          ((* hack: run post-fork bookkeeping stuff by passing a dummy function to [fork_protect] *)
-           fork_protect ~f:(fun () -> ()))
+        ~child_prologue:
+          ((* hack: we'll continue executing after the function passed to [protect], despite what he name might suggest *)
+           ForkUtils.protect ~f:child_prologue)
     in
     PerfEvent.(log (fun logger -> log_end_event logger ())) ;
     pool
@@ -59,4 +57,5 @@ let run_sequentially ~(f : ('a, 'b) doer) (tasks : 'a list) : unit =
       TaskBar.refresh task_bar ;
       run_tasks () )
   in
-  run_tasks () ; TaskBar.finish task_bar
+  run_tasks () ;
+  TaskBar.finish task_bar

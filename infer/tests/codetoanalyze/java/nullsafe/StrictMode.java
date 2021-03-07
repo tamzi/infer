@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-package codetoanalyze.java.nullsafe_default;
+package codetoanalyze.java.nullsafe;
 
 import com.facebook.infer.annotation.NullsafeStrict;
 import javax.annotation.Nonnull;
@@ -166,6 +166,14 @@ class Strict {
   private SomeEnum enumValueOfIsNonnullable() {
     // valueOf() is a special enum method which is never nullable
     return SomeEnum.valueOf("this will throw but won't return null");
+  }
+
+  private Boolean booleanFALSE_NonNullableOK() {
+    return Boolean.FALSE;
+  }
+
+  private Boolean booleanTRUE_NonNullableOK() {
+    return Boolean.TRUE;
   }
 
   private String nonStrictClass_convertingNonnullToNonnullIsBad() {

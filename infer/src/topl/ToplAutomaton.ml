@@ -21,7 +21,7 @@ end
 
 type vname = Vname.t
 
-type vindex = int
+type vindex = int [@@deriving compare]
 
 type tindex = int
 
@@ -82,9 +82,12 @@ let make properties =
           let ps = List.map ~f:(fun p -> "\\|" ^ p ^ "\\.") p.ToplAst.prefixes in
           "^\\(" ^ String.concat ps ^ "\\)" ^ pname ^ "("
       in
-      let prefix_label label =
-        ToplAst.{label with procedure_name= prefix_pname label.procedure_name}
+      let prefix_pattern =
+        ToplAst.(
+          function
+          | ProcedureNamePattern pname -> ProcedureNamePattern (prefix_pname pname) | p -> p)
       in
+      let prefix_label label = ToplAst.{label with pattern= prefix_pattern label.pattern} in
       let f t =
         let source = vindex ToplAst.(p.name, t.source) in
         let target = vindex ToplAst.(p.name, t.target) in
@@ -101,7 +104,8 @@ let make properties =
     let vcount = Array.length states in
     let a = Array.create ~len:vcount [] in
     let f i t = a.(t.source) <- i :: a.(t.source) in
-    Array.iteri ~f transitions ; a
+    Array.iteri ~f transitions ;
+    a
   in
   let max_args =
     let llen l = Option.value_map ~default:0 ~f:List.length l.ToplAst.arguments in
@@ -125,7 +129,8 @@ let make properties =
       in
       List.iter ~f:set_nondet nondet
     in
-    List.iter ~f properties ; a
+    List.iter ~f properties ;
+    a
   in
   let skips : bool array =
     (* TODO(rgrigore): Rename "anys"? *)
@@ -162,3 +167,39 @@ let get_start_error_pairs a =
   let f ~key:_ = function `Both (x, y) -> Some (x, y) | _ -> None in
   let pairs = Hashtbl.merge starts errors ~f in
   Hashtbl.data pairs
+
+
+let registers a =
+  (* TODO(rgrigore): cache *)
+  let do_assignment acc (r, _v) = String.Set.add acc r in
+  let do_action acc = List.fold ~init:acc ~f:do_assignment in
+  let do_value acc = ToplAst.(function Register r -> String.Set.add acc r | _ -> acc) in
+  let do_predicate acc =
+    ToplAst.(function Binop (_op, l, r) -> do_value (do_value acc l) r | _ -> acc)
+  in
+  let do_condition acc = List.fold ~init:acc ~f:do_predicate in
+  let do_label acc {ToplAst.action; condition} = do_action (do_condition acc condition) action in
+  let do_label_opt acc = Option.fold ~init:acc ~f:do_label in
+  let do_transition acc {label} = do_label_opt acc label in
+  String.Set.to_list (Array.fold ~init:String.Set.empty ~f:do_transition a.transitions)
+
+
+let pp_message_of_state fmt (a, i) =
+  let property, state = vname a i in
+  Format.fprintf fmt "property %s reaches state %s" property state
+
+
+let tfilter_map a ~f = Array.to_list (Array.filter_map ~f a.transitions)
+
+let pp_transition f {source; target; label} =
+  Format.fprintf f "@[%d -> %d:@,%a@]" source target ToplAstOps.pp_label label
+
+
+let has_name n a i =
+  let _property, name = vname a i in
+  String.equal name n
+
+
+let is_start = has_name "start"
+
+let is_error = has_name "error"

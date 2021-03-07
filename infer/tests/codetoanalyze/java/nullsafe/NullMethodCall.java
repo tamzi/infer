@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-package codetoanalyze.java.nullsafe_default;
+package codetoanalyze.java.nullsafe;
 
 import android.app.AlarmManager;
 import android.app.PendingIntent;
@@ -349,7 +349,7 @@ public class NullMethodCall {
     }
   }
 
-  void testInAssignmentFP(@Nullable Object object) {
+  void testInAssignmentOK(@Nullable Object object) {
     Object t;
     while ((t = getNullable()) != null) {
       t.toString(); // Should not warn here

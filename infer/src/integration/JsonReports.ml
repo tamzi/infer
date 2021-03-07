@@ -28,24 +28,36 @@ let compute_key (bug_type : string) (proc_name : Procname.t) (filename : string)
   String.concat ~sep:"|" [base_filename; simple_procedure_name; bug_type]
 
 
-let compute_hash ~(severity : string) ~(bug_type : string) ~(proc_name : Procname.t)
-    ~(file : string) ~(qualifier : string) =
-  let base_filename = Filename.basename file in
-  let hashable_procedure_name = Procname.hashable_name proc_name in
-  let location_independent_qualifier =
-    (* Removing the line,column, and infer temporary variable (e.g., n$67) information from the
-       error message as well as the index of the annonymmous class to make the hash invariant
-       when moving the source code in the file *)
-    Str.global_replace (Str.regexp "\\(line \\|column \\|parameter \\|\\$\\)[0-9]+") "$_" qualifier
-  in
-  Utils.better_hash
-    (severity, bug_type, hashable_procedure_name, base_filename, location_independent_qualifier)
-  |> Caml.Digest.to_hex
+let compute_hash =
+  let num_regexp = Re.Str.regexp "\\(:\\)[0-9]+" in
+  let qualifier_regexp = Re.Str.regexp "\\(line \\|column \\|:\\|parameter \\|\\$\\)[0-9]+" in
+  fun ~(severity : string) ~(bug_type : string) ~(proc_name : Procname.t) ~(file : string)
+      ~(qualifier : string) ->
+    let base_filename = Filename.basename file in
+    let hashable_procedure_name = Procname.hashable_name proc_name in
+    let location_independent_proc_name =
+      Re.Str.global_replace num_regexp "$_" hashable_procedure_name
+    in
+    let location_independent_qualifier =
+      (* Removing the line,column, line and column in lambda's name
+         (e.g. test::lambda.cpp:10:15::operator()),
+         and infer temporary variable (e.g., n$67) information from the
+         error message as well as the index of the annonymmous class to make the hash invariant
+         when moving the source code in the file *)
+      Re.Str.global_replace qualifier_regexp "$_" qualifier
+    in
+    Utils.better_hash
+      ( severity
+      , bug_type
+      , location_independent_proc_name
+      , base_filename
+      , location_independent_qualifier )
+    |> Caml.Digest.to_hex
 
 
 let loc_trace_to_jsonbug_record trace_list ekind =
   match ekind with
-  | Exceptions.Info ->
+  | IssueType.Info ->
       []
   | _ ->
       let trace_item_to_record trace_item =
@@ -59,8 +71,8 @@ let loc_trace_to_jsonbug_record trace_list ekind =
       record_list
 
 
-let should_report issue_type error_desc eclass =
-  if (not Config.filtering) || Exceptions.equal_err_class eclass Exceptions.Linters then true
+let should_report issue_type error_desc =
+  if (not Config.filtering) || Language.curr_language_is CIL then true
   else
     let issue_type_is_null_deref =
       let null_deref_issue_types =
@@ -69,8 +81,7 @@ let should_report issue_type error_desc eclass =
         ; null_dereference
         ; parameter_not_null_checked
         ; premature_nil_termination
-        ; empty_vector_access
-        ; biabd_use_after_free ]
+        ; empty_vector_access ]
       in
       List.mem ~equal:IssueType.equal null_deref_issue_types issue_type
     in
@@ -157,19 +168,18 @@ module JsonIssuePrinter = MakeJsonListPrinter (struct
     in
     if SourceFile.is_invalid source_file then
       L.(die InternalError)
-        "Invalid source file for %a %a@.Trace: %a@." IssueType.pp err_key.err_name
+        "Invalid source file for %a %a@.Trace: %a@." IssueType.pp err_key.issue_type
         Localise.pp_error_desc err_key.err_desc Errlog.pp_loc_trace err_data.loc_trace ;
-    let should_report_source_file =
-      (not (SourceFile.is_biabduction_model source_file))
-      || Config.debug_mode || Config.debug_exceptions
+    let should_report_proc_name =
+      Config.debug_mode || Config.debug_exceptions || not (BiabductionModels.mem proc_name)
     in
     if
-      error_filter source_file err_key.err_name
-      && should_report_source_file
-      && should_report err_key.err_name err_key.err_desc err_data.err_class
+      error_filter source_file err_key.issue_type
+      && should_report_proc_name
+      && should_report err_key.issue_type err_key.err_desc
     then
-      let severity = Exceptions.severity_string err_key.severity in
-      let bug_type = err_key.err_name.IssueType.unique_id in
+      let severity = IssueType.string_of_severity err_key.severity in
+      let bug_type = err_key.issue_type.unique_id in
       let file =
         SourceFile.to_string ~force_relative:Config.report_force_relative_path source_file
       in
@@ -182,7 +192,7 @@ module JsonIssuePrinter = MakeJsonListPrinter (struct
       in
       let qualifier =
         let base_qualifier = error_desc_to_plain_string err_key.err_desc in
-        if IssueType.(equal resource_leak) err_key.err_name then
+        if IssueType.(equal resource_leak) err_key.issue_type then
           match Errlog.compute_local_exception_line err_data.loc_trace with
           | None ->
               base_qualifier
@@ -209,11 +219,11 @@ module JsonIssuePrinter = MakeJsonListPrinter (struct
         ; hash= compute_hash ~severity ~bug_type ~proc_name ~file ~qualifier
         ; dotty= error_desc_to_dotty_string err_key.err_desc
         ; infer_source_loc= json_ml_loc
-        ; bug_type_hum= err_key.err_name.IssueType.hum
+        ; bug_type_hum= err_key.issue_type.hum
         ; linters_def_file= err_data.linters_def_file
         ; doc_url= err_data.doc_url
         ; traceview_id= None
-        ; censored_reason= censored_reason err_key.err_name source_file
+        ; censored_reason= censored_reason err_key.issue_type source_file
         ; access= err_data.access
         ; extras= err_data.extras }
       in
@@ -231,11 +241,22 @@ module IssuesJson = struct
       err_log
 end
 
-type json_costs_printer_typ =
-  {loc: Location.t; proc_name: Procname.t; cost_opt: CostDomain.summary option}
+module NoQualifierHashProcInfo = struct
+  type t = {hash: string; loc: Jsonbug_t.loc; procedure_name: string; procedure_id: string}
 
-module JsonCostsPrinter = MakeJsonListPrinter (struct
-  type elt = json_costs_printer_typ
+  let get loc proc_name =
+    let file =
+      SourceFile.to_string ~force_relative:Config.report_force_relative_path loc.Location.file
+    in
+    let hash = compute_hash ~severity:"" ~bug_type:"" ~proc_name ~file ~qualifier:"" in
+    let loc = {Jsonbug_t.file; lnum= loc.Location.line; cnum= loc.Location.col; enum= -1} in
+    let procedure_name = Procname.get_method proc_name in
+    let procedure_id = procedure_id_of_procname proc_name in
+    {hash; loc; procedure_name; procedure_id}
+end
+
+module JsonCostsPrinterElt = struct
+  type elt = {loc: Location.t; proc_name: Procname.t; cost_opt: CostDomain.summary option}
 
   let to_string {loc; proc_name; cost_opt} =
     match cost_opt with
@@ -251,26 +272,58 @@ module JsonCostsPrinter = MakeJsonListPrinter (struct
               Format.asprintf "%a" (CostDomain.BasicCost.pp_degree ~only_bigO:true) degree_with_term
           }
         in
-        let cost_info cost =
+        let cost_info ?is_autoreleasepool_trace cost =
           { Jsonbug_t.polynomial_version= CostDomain.BasicCost.version
           ; polynomial= CostDomain.BasicCost.encode cost
           ; degree=
               Option.map (CostDomain.BasicCost.degree cost) ~f:Polynomials.Degree.encode_to_int
-          ; hum= hum cost }
+          ; hum= hum cost
+          ; trace=
+              loc_trace_to_jsonbug_record
+                (CostDomain.BasicCost.polynomial_traces ?is_autoreleasepool_trace cost)
+                Advice }
         in
         let cost_item =
-          let file = SourceFile.to_rel_path loc.Location.file in
-          { Jsonbug_t.hash= compute_hash ~severity:"" ~bug_type:"" ~proc_name ~file ~qualifier:""
-          ; loc= {file; lnum= loc.Location.line; cnum= loc.Location.col; enum= -1}
-          ; procedure_name= Procname.get_method proc_name
-          ; procedure_id= procedure_id_of_procname proc_name
+          let {NoQualifierHashProcInfo.hash; loc; procedure_name; procedure_id} =
+            NoQualifierHashProcInfo.get loc proc_name
+          in
+          { Jsonbug_t.hash
+          ; loc
+          ; procedure_name
+          ; procedure_id
           ; is_on_ui_thread
-          ; exec_cost= cost_info (CostDomain.get_cost_kind CostKind.OperationCost post) }
+          ; exec_cost= cost_info (CostDomain.get_cost_kind CostKind.OperationCost post).cost
+          ; autoreleasepool_size=
+              cost_info ~is_autoreleasepool_trace:true
+                (CostDomain.get_cost_kind CostKind.AutoreleasepoolSize post).cost }
         in
         Some (Jsonbug_j.string_of_cost_item cost_item)
     | _ ->
         None
-end)
+end
+
+module JsonCostsPrinter = MakeJsonListPrinter (JsonCostsPrinterElt)
+
+module JsonConfigImpactPrinterElt = struct
+  type elt =
+    { loc: Location.t
+    ; proc_name: Procname.t
+    ; config_impact_opt: ConfigImpactAnalysis.Summary.t option }
+
+  let to_string {loc; proc_name; config_impact_opt} =
+    Option.map config_impact_opt ~f:(fun config_impact ->
+        let {NoQualifierHashProcInfo.hash; loc; procedure_name; procedure_id} =
+          NoQualifierHashProcInfo.get loc proc_name
+        in
+        let unchecked_callees =
+          ConfigImpactAnalysis.Summary.get_unchecked_callees config_impact
+          |> ConfigImpactAnalysis.UncheckedCallees.encode
+        in
+        Jsonbug_j.string_of_config_impact_item
+          {Jsonbug_t.hash; loc; procedure_name; procedure_id; unchecked_callees} )
+end
+
+module JsonConfigImpactPrinter = MakeJsonListPrinter (JsonConfigImpactPrinterElt)
 
 let mk_error_filter filters proc_name file error_name =
   (Config.write_html || not (IssueType.(equal skip_function) error_name))
@@ -279,20 +332,20 @@ let mk_error_filter filters proc_name file error_name =
   && filters.Inferconfig.proc_filter proc_name
 
 
-let collect_issues summary issues_acc =
-  let err_log = Summary.get_err_log summary in
-  let proc_name = Summary.get_proc_name summary in
-  let proc_location = Summary.get_loc summary in
+let collect_issues proc_name proc_location err_log issues_acc =
   Errlog.fold
     (fun err_key err_data acc -> {Issue.proc_name; proc_location; err_key; err_data} :: acc)
     err_log issues_acc
 
 
-let write_costs summary (outfile : Utils.outfile) =
-  let proc_name = Summary.get_proc_name summary in
+let write_costs proc_name loc cost_opt (outfile : Utils.outfile) =
   if not (Cost.is_report_suppressed proc_name) then
-    JsonCostsPrinter.pp outfile.fmt
-      {loc= Summary.get_loc summary; proc_name; cost_opt= summary.Summary.payloads.Payloads.cost}
+    JsonCostsPrinter.pp outfile.fmt {loc; proc_name; cost_opt}
+
+
+let write_config_impact proc_name loc config_impact_opt (outfile : Utils.outfile) =
+  if ExternalConfigImpactData.is_in_config_data_file proc_name then
+    JsonConfigImpactPrinter.pp outfile.fmt {loc; proc_name; config_impact_opt}
 
 
 (** Process lint issues of a procedure *)
@@ -301,17 +354,23 @@ let write_lint_issues filters (issues_outf : Utils.outfile) linereader procname 
   IssuesJson.pp_issues_of_error_log issues_outf.fmt error_filter linereader None procname error_log
 
 
-(** Process a summary *)
-let process_summary ~costs_outf summary issues_acc =
-  write_costs summary costs_outf ; collect_issues summary issues_acc
+let process_summary proc_name loc ~cost:(cost_opt, costs_outf)
+    ~config_impact:(config_impact_opt, config_impact_outf) err_log issues_acc =
+  write_costs proc_name loc cost_opt costs_outf ;
+  write_config_impact proc_name loc config_impact_opt config_impact_outf ;
+  collect_issues proc_name loc err_log issues_acc
 
 
-let process_all_summaries_and_issues ~issues_outf ~costs_outf =
+let process_all_summaries_and_issues ~issues_outf ~costs_outf ~config_impact_outf =
   let linereader = LineReader.create () in
   let filters = Inferconfig.create_filters () in
   let all_issues = ref [] in
-  SpecsFiles.iter_from_config ~f:(fun summary ->
-      all_issues := process_summary ~costs_outf summary !all_issues ) ;
+  Summary.OnDisk.iter_report_summaries_from_config
+    ~f:(fun proc_name loc cost_opt config_impact_opt err_log ->
+      all_issues :=
+        process_summary proc_name loc ~cost:(cost_opt, costs_outf)
+          ~config_impact:(config_impact_opt, config_impact_outf)
+          err_log !all_issues ) ;
   all_issues := Issue.sort_filter_issues !all_issues ;
   List.iter
     ~f:(fun {Issue.proc_name; proc_location; err_key; err_data} ->
@@ -321,12 +380,11 @@ let process_all_summaries_and_issues ~issues_outf ~costs_outf =
     !all_issues ;
   (* Issues that are generated and stored outside of summaries by linter and checkers *)
   List.iter (ResultsDirEntryName.get_issues_directories ()) ~f:(fun dir_name ->
-      IssueLog.load dir_name |> IssueLog.iter ~f:(write_lint_issues filters issues_outf linereader)
-  ) ;
+      IssueLog.load dir_name |> IssueLog.iter ~f:(write_lint_issues filters issues_outf linereader) ) ;
   ()
 
 
-let write_reports ~issues_json ~costs_json =
+let write_reports ~issues_json ~costs_json ~config_impact_json =
   let mk_outfile fname =
     match Utils.create_outfile fname with
     | None ->
@@ -334,13 +392,19 @@ let write_reports ~issues_json ~costs_json =
     | Some outf ->
         outf
   in
-  let issues_outf = mk_outfile issues_json in
-  IssuesJson.pp_open issues_outf.fmt () ;
-  let costs_outf = mk_outfile costs_json in
-  JsonCostsPrinter.pp_open costs_outf.fmt () ;
-  process_all_summaries_and_issues ~issues_outf ~costs_outf ;
-  JsonCostsPrinter.pp_close costs_outf.fmt () ;
-  Utils.close_outf costs_outf ;
-  IssuesJson.pp_close issues_outf.fmt () ;
-  Utils.close_outf issues_outf ;
-  ()
+  let open_outfile_and_fmt json =
+    let outf = mk_outfile json in
+    IssuesJson.pp_open outf.fmt () ;
+    outf
+  in
+  let close_fmt_and_outfile outf =
+    IssuesJson.pp_close outf.Utils.fmt () ;
+    Utils.close_outf outf
+  in
+  let issues_outf = open_outfile_and_fmt issues_json in
+  let costs_outf = open_outfile_and_fmt costs_json in
+  let config_impact_outf = open_outfile_and_fmt config_impact_json in
+  process_all_summaries_and_issues ~issues_outf ~costs_outf ~config_impact_outf ;
+  close_fmt_and_outfile config_impact_outf ;
+  close_fmt_and_outfile costs_outf ;
+  close_fmt_and_outfile issues_outf

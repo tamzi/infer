@@ -23,7 +23,6 @@ type splitting =
   ; missing_typ: (Exp.t * Exp.t) list }
 
 type deref_error =
-  | Deref_freed of PredSymb.res_action  (** dereference a freed pointer *)
   | Deref_minusone  (** dereference -1 *)
   | Deref_null of PredSymb.path_pos  (** dereference null *)
   | Deref_undef of Procname.t * Location.t * PredSymb.path_pos
@@ -335,15 +334,11 @@ let check_dereferences caller_pname tenv callee_pname actual_pre sub spec_pre fo
     else if Exp.equal e_sub Exp.minus_one then
       Some (Deref_minusone, desc true (Localise.deref_str_dangling None))
     else
-      match Attribute.get_resource tenv actual_pre e_sub with
-      | Some (Apred (Aresource ({ra_kind= Rrelease} as ra), _)) ->
-          Some (Deref_freed ra, desc true (Localise.deref_str_freed ra))
-      | _ -> (
-        match Attribute.get_undef tenv actual_pre e_sub with
-        | Some (Apred (Aundef (s, _, loc, pos), _)) ->
-            Some (Deref_undef (s, loc, pos), desc false (Localise.deref_str_undef (s, loc)))
-        | _ ->
-            None )
+      match Attribute.get_undef tenv actual_pre e_sub with
+      | Some (Apred (Aundef (s, _, loc, pos), _)) ->
+          Some (Deref_undef (s, loc, pos), desc false (Localise.deref_str_undef (s, loc)))
+      | _ ->
+          None
   in
   let check_hpred = function
     | Predicates.Hpointsto (lexp, se, _) ->
@@ -401,8 +396,7 @@ let check_path_errors_in_post {InterproceduralAnalysis.proc_desc= caller_pdesc; 
           in
           State.set_path new_path path_pos_opt ;
           let exn = Exceptions.Divide_by_zero (desc, __POS__) in
-          BiabductionReporting.log_issue_deprecated_using_state caller_pdesc err_log
-            Exceptions.Warning exn )
+          BiabductionReporting.log_issue_deprecated_using_state caller_pdesc err_log exn )
     | _ ->
         ()
   in
@@ -672,19 +666,6 @@ let prop_footprint_add_pi_sigma_starfld_sigma tenv (prop : 'a Prop.t) pi_new sig
       Some (Prop.normalize tenv (Prop.set prop ~pi:pi' ~pi_fp:pi_fp' ~sigma_fp:sigma_fp''))
 
 
-(** Check if the attribute change is a mismatch between a kind of allocation and a different kind of
-    deallocation *)
-let check_attr_dealloc_mismatch att_old att_new =
-  match (att_old, att_new) with
-  | ( PredSymb.Aresource ({ra_kind= Racquire; ra_res= Rmemory mk_old} as ra_old)
-    , PredSymb.Aresource ({ra_kind= Rrelease; ra_res= Rmemory mk_new} as ra_new) )
-    when PredSymb.compare_mem_kind mk_old mk_new <> 0 ->
-      let desc = Errdesc.explain_allocation_mismatch ra_old ra_new in
-      raise (Exceptions.Deallocation_mismatch (desc, __POS__))
-  | _ ->
-      ()
-
-
 (** [prop_copy_footprint p1 p2] copies the footprint and pure part of [p1] into [p2] *)
 let prop_copy_footprint_pure tenv p1 p2 =
   let p2' = Prop.set p2 ~pi_fp:p1.Prop.pi_fp ~sigma_fp:p1.Prop.sigma_fp in
@@ -694,9 +675,7 @@ let prop_copy_footprint_pure tenv p1 p2 =
   let replace_attr prop atom =
     (* call replace_atom_attribute which deals with existing attibutes *)
     (* if [atom] represents an attribute [att], add the attribure to [prop] *)
-    if Attribute.is_pred atom then
-      Attribute.add_or_replace_check_changed tenv check_attr_dealloc_mismatch prop atom
-    else prop
+    if Attribute.is_pred atom then Attribute.add_or_replace_check_changed tenv prop atom else prop
   in
   List.fold ~f:replace_attr ~init:(Prop.normalize tenv res_noattr) pi2_attr
 
@@ -806,7 +785,9 @@ let combine ({InterproceduralAnalysis.proc_desc= caller_pdesc; tenv; _} as analy
   Prop.d_sigma split.frame_fld ;
   L.d_ln () ;
   if not (List.is_empty split.frame_typ) then (
-    L.d_strln "Frame typ:" ; Prover.d_typings split.frame_typ ; L.d_ln () ) ;
+    L.d_strln "Frame typ:" ;
+    Prover.d_typings split.frame_typ ;
+    L.d_ln () ) ;
   L.d_strln "Missing fld:" ;
   Prop.d_sigma split.missing_fld ;
   L.d_ln () ;
@@ -926,7 +907,8 @@ let mk_actual_precondition tenv prop actual_params formal_params =
               ^ string_of_int (List.length formal_params)
               ^ ")"
             in
-            L.d_warning str ; L.d_ln () ) ;
+            L.d_warning str ;
+            L.d_ln () ) ;
           []
       | _ :: _, [] ->
           raise (Exceptions.Wrong_argument_number __POS__)
@@ -1047,7 +1029,7 @@ let add_missing_field_to_tenv ~missing_sigma exe_env caller_tenv callee_pname hp
   (* if the callee is a model, then we don't have a tenv for it *)
   if (not callee_attributes.ProcAttributes.is_biabduction_model) && add_fields then
     let callee_tenv_opt =
-      try Some (Exe_env.get_tenv exe_env callee_pname)
+      try Some (Exe_env.get_proc_tenv exe_env callee_pname)
       with _ ->
         let source_file = callee_attributes.ProcAttributes.loc.Location.file in
         Tenv.load source_file
@@ -1130,8 +1112,7 @@ let exe_spec
           missing_sigma_objc_class callee_summary ) ;
       let log_check_exn check =
         let exn = get_check_exn tenv check callee_pname loc __POS__ in
-        BiabductionReporting.log_issue_deprecated_using_state caller_pdesc err_log
-          Exceptions.Warning exn
+        BiabductionReporting.log_issue_deprecated_using_state caller_pdesc err_log exn
       in
       let do_split () =
         process_splitting actual_pre sub1 sub2 frame missing_pi missing_sigma frame_fld missing_fld
@@ -1249,7 +1230,11 @@ let exe_call_postprocess tenv ret_id callee_pname callee_attrs loc results =
   let deref_errors =
     List.filter ~f:(function Dereference_error _ -> true | _ -> false) invalid_res
   in
-  let print_pi pi = L.d_str "pi: " ; Prop.d_pi pi ; L.d_ln () in
+  let print_pi pi =
+    L.d_str "pi: " ;
+    Prop.d_pi pi ;
+    L.d_ln ()
+  in
   let call_desc kind_opt = Localise.desc_precondition_not_met kind_opt callee_pname loc in
   let res_with_path_idents =
     if !BiabductionConfig.footprint then
@@ -1286,13 +1271,11 @@ let exe_call_postprocess tenv ret_id callee_pname callee_attrs loc results =
                 else if Localise.is_empty_vector_access_desc desc then
                   raise (Exceptions.Empty_vector_access (desc, __POS__))
                 else raise (Exceptions.Null_dereference (desc, __POS__))
-            | Dereference_error (Deref_freed _, desc, path_opt) ->
-                extend_path path_opt None ;
-                raise (Exceptions.Biabd_use_after_free (desc, __POS__))
-            | Dereference_error (Deref_undef (_, _, pos), desc, path_opt) ->
-                extend_path path_opt (Some pos) ;
-                raise (Exceptions.Skip_pointer_dereference (desc, __POS__))
-            | Prover_checks _ | Cannot_combine | Missing_sigma_not_empty | Missing_fld_not_empty ->
+            | Dereference_error (Deref_undef _, _, _)
+            | Prover_checks _
+            | Cannot_combine
+            | Missing_sigma_not_empty
+            | Missing_fld_not_empty ->
                 assert false )
         | [] ->
             (* no dereference error detected *)
@@ -1325,7 +1308,8 @@ let exe_call_postprocess tenv ret_id callee_pname callee_attrs loc results =
               in
               State.add_diverging_states (Paths.PathSet.from_renamed_list incons_res)
           in
-          save_diverging_states () ; vr.vr_cons_res
+          save_diverging_states () ;
+          vr.vr_cons_res
         in
         List.map
           ~f:(fun (p, path) -> (prop_pure_to_footprint tenv p, path))

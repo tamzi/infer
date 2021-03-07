@@ -5,13 +5,17 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-package codetoanalyze.java.nullsafe_default;
+package codetoanalyze.java.nullsafe;
 
 import com.google.common.base.Optional;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.net.URL;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
@@ -213,5 +217,52 @@ public class ReturnNotNullable {
   int returnsZero() {
     field = 0;
     return field;
+  }
+
+  static class AssignmentResultCheck {
+    public Throwable nullCheckAssignmentResultAsNonnullOk(Throwable error) {
+      Throwable cause;
+      while ((cause = error.getCause()) != null) {
+        error = cause;
+      }
+
+      return error;
+    }
+
+    // This case is different from the one above in 2 ways:
+    // 1. The argument is a generic,
+    // 2. The type parameter is not {@code Object}.
+    // Both are important to trigger the behaviour we're checking (indirection via typecast in CFG).
+    public List<String> nullCheckGenericAssignmentResultAsNonnullOk(BlockingQueue<Runnable> queue) {
+      final ArrayList<String> records = new ArrayList<>(queue.size());
+      try {
+        Runnable task;
+        // null-check should refine nullability of task
+        while ((task = queue.poll(0, TimeUnit.MILLISECONDS)) != null) {
+          records.add(task.toString());
+        }
+      } catch (InterruptedException ie) {
+        // Ignore exception
+      }
+
+      return records;
+    }
+
+    static class NullableGetter<T> {
+      @Nullable public T mInner;
+
+      @Nullable
+      public T get() {
+        return mInner;
+      }
+    }
+
+    public void chainedCallsWithAssignmentChecksOk(@Nullable NullableGetter<NullableGetter> c1) {
+      NullableGetter<NullableGetter> c2, c3;
+
+      if (c1 != null && (c2 = c1.get()) != null && (c3 = c2.get()) != null) {
+        c3.get();
+      }
+    }
   }
 }

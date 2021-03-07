@@ -36,7 +36,7 @@ void read_iterator_loop_ok(std::vector<int>& vec) {
   }
 }
 
-void iterator_next_after_emplace_loop_bad(std::vector<int>& vec) {
+void iterator_next_after_emplace_loop_latent(std::vector<int>& vec) {
   int sum = 0;
   for (auto iter = vec.begin(); iter != vec.end(); ++iter) {
     int elem = *iter;
@@ -46,7 +46,7 @@ void iterator_next_after_emplace_loop_bad(std::vector<int>& vec) {
   }
 }
 
-void iterator_after_push_back_loop_bad(std::vector<int>& vec_other) {
+void iterator_after_push_back_loop_latent(std::vector<int>& vec_other) {
   std::vector<int> vec(2);
   auto iter_begin = vec.begin();
   auto iter_end = vec.end();
@@ -69,6 +69,12 @@ void iterator_end_read_bad() {
   std::vector<int> vec = {1, 2};
   auto iter = vec.end();
   std::cout << *iter << '\n';
+}
+
+void iterator_end_next_bad() {
+  std::vector<int> vec = {1, 2};
+  auto iter = vec.end();
+  ++iter;
 }
 
 void iterator_end_prev_read_ok() {
@@ -105,5 +111,23 @@ void call_iterator_loop_ok(bool b) {
   while (!finished) {
     if (!for_each_ok(vec, b))
       return;
+  }
+}
+
+std::vector<int>::iterator find(std::vector<int>& vec, bool b) {
+  for (auto it = vec.begin(); it != vec.end(); ++it) {
+    if (b) {
+      return it;
+    }
+  }
+  return vec.end();
+}
+
+void iterator_end_returned_ok(std::vector<int> vec, bool b) {
+  auto it = find(vec, b);
+  if (it != vec.end()) {
+    *it = 3;
+  } else {
+    return;
   }
 }

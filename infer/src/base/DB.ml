@@ -25,7 +25,7 @@ let append_crc_cutoff ?(key = "") name =
     let name_for_crc = name ^ key in
     Utils.string_crc_hex32 name_for_crc
   in
-  Printf.sprintf "%s%c%s" name_up_to_cutoff crc_token crc_str
+  (Printf.sprintf "%s%c%s" name_up_to_cutoff crc_token crc_str, crc_str)
 
 
 let curr_source_file_encoding = `Enc_crc
@@ -41,7 +41,7 @@ let source_file_encoding source_file =
   | `Enc_crc ->
       let base = Filename.basename source_file_s in
       let dir = Filename.dirname source_file_s in
-      append_crc_cutoff ~key:dir base
+      append_crc_cutoff ~key:dir base |> fst
 
 
 (** {2 Source Dirs} *)
@@ -55,7 +55,7 @@ let source_dir_to_string source_dir = source_dir
 (** get the path to an internal file with the given extention (.tenv, ...) *)
 let source_dir_get_internal_file source_dir extension =
   let source_dir_name =
-    append_crc_cutoff (Caml.Filename.remove_extension (Filename.basename source_dir))
+    append_crc_cutoff (Caml.Filename.remove_extension (Filename.basename source_dir)) |> fst
   in
   let fname = source_dir_name ^ extension in
   Filename.concat source_dir fname
@@ -125,9 +125,6 @@ module Results_dir = struct
     filename_from_base base path
 
 
-  (** directory of spec files *)
-  let specs_dir = ResultsDir.get_path Specs
-
   (** initialize the results directory *)
   let init ?(debug = false) source =
     if SourceFile.is_invalid source then L.(die InternalError) "Invalid source file passed" ;
@@ -136,22 +133,17 @@ module Results_dir = struct
       Utils.create_dir (path_to_filename (Abs_source_dir source) []) )
 
 
-  let clean_specs_dir () =
-    (* create dir just in case it doesn't exist to avoid errors *)
-    Utils.create_dir specs_dir ;
-    Array.iter (Sys.readdir specs_dir) ~f:(fun specs ->
-        Filename.concat specs_dir specs |> Sys.remove )
-
-
   (** create a file at the given path, creating any missing directories *)
   let create_file pk path =
     let rec create = function
       | [] ->
           let fname = path_to_filename pk [] in
-          Utils.create_dir fname ; fname
+          Utils.create_dir fname ;
+          fname
       | name :: names ->
           let new_path = Filename.concat (create names) name in
-          Utils.create_dir new_path ; new_path
+          Utils.create_dir new_path ;
+          new_path
     in
     let filename, dir_path =
       match List.rev path with

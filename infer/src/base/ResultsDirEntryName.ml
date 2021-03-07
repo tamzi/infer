@@ -10,8 +10,11 @@ open! IStd
 let buck_infer_deps_file_name = "infer-deps.txt"
 
 type id =
-  | BuckDependencies
+  | AllocationTraces
   | CaptureDB
+  | CaptureDBShm
+  | CaptureDBWal
+  | CaptureDependencies
   | ChangedFunctions
   | Debug
   | Differential
@@ -25,13 +28,14 @@ type id =
   | PerfEvents
   | ProcnamesLocks
   | RacerDIssues
+  | ReportConfigImpactJson
   | ReportCostsJson
   | ReportHtml
   | ReportJson
   | ReportText
+  | ReportXML
   | RetainCycles
   | RunState
-  | Specs
   | StarvationIssues
   | Temporary
   | TestDeterminatorReport
@@ -52,7 +56,12 @@ type t =
             e.g., a distributed Buck cache. *) }
 
 let of_id = function
-  | BuckDependencies ->
+  | AllocationTraces ->
+      { rel_path= "memtrace"
+      ; kind= Directory
+      ; before_incremental_analysis= Delete
+      ; before_caching_capture= Delete }
+  | CaptureDependencies ->
       { rel_path= buck_infer_deps_file_name
       ; kind= File
       ; before_incremental_analysis= Delete
@@ -62,6 +71,16 @@ let of_id = function
       ; kind= File
       ; before_incremental_analysis= Keep
       ; before_caching_capture= Keep }
+  | CaptureDBShm ->
+      { rel_path= "results.db-shm"
+      ; kind= File
+      ; before_incremental_analysis= Keep
+      ; before_caching_capture= Delete }
+  | CaptureDBWal ->
+      { rel_path= "results.db-wal"
+      ; kind= File
+      ; before_incremental_analysis= Keep
+      ; before_caching_capture= Delete }
   | ChangedFunctions ->
       { rel_path= "changed_functions.json"
       ; kind= File
@@ -127,6 +146,11 @@ let of_id = function
       ; kind= IssuesDirectory
       ; before_incremental_analysis= Delete
       ; before_caching_capture= Delete }
+  | ReportConfigImpactJson ->
+      { rel_path= "config-impact-report.json"
+      ; kind= File
+      ; before_incremental_analysis= Delete
+      ; before_caching_capture= Delete }
   | ReportCostsJson ->
       { rel_path= "costs-report.json"
       ; kind= File
@@ -147,6 +171,11 @@ let of_id = function
       ; kind= File
       ; before_incremental_analysis= Delete
       ; before_caching_capture= Delete }
+  | ReportXML ->
+      { rel_path= "report.xml"
+      ; kind= File
+      ; before_incremental_analysis= Delete
+      ; before_caching_capture= Delete }
   | RetainCycles ->
       { rel_path= "retain_cycle_dotty"
       ; kind= Directory
@@ -155,11 +184,6 @@ let of_id = function
   | RunState ->
       { rel_path= ".infer_runstate.json"
       ; kind= File
-      ; before_incremental_analysis= Keep
-      ; before_caching_capture= Delete }
-  | Specs ->
-      { rel_path= "specs"
-      ; kind= Directory
       ; before_incremental_analysis= Keep
       ; before_caching_capture= Delete }
   | StarvationIssues ->

@@ -6,14 +6,11 @@
  *)
 
 open! IStd
-module F = Format
 
-type severity = Low | Medium | High [@@deriving compare]
-
-val pp_severity : F.formatter -> severity -> unit
-
-val may_block : Tenv.t -> Procname.t -> HilExp.t list -> severity option
+val may_block : Tenv.t -> Procname.t -> HilExp.t list -> bool
 (** is the method call potentially blocking, given the actuals passed? *)
+
+val may_do_ipc : Tenv.t -> Procname.t -> HilExp.t list -> bool
 
 val is_strict_mode_violation : Tenv.t -> Procname.t -> HilExp.t list -> bool
 
@@ -52,11 +49,17 @@ val get_returned_executor :
   Tenv.t -> Procname.t -> HilExp.t list -> scheduler_thread_constraint option
 (** does the function return an executor and of which thread? *)
 
-val schedules_work_on_ui_thread : Tenv.t -> Procname.t -> bool
-(** method call known to directly schedule work on UI thread *)
+val schedules_first_arg_on_ui_thread : Tenv.t -> Procname.t -> bool
+(** method call known to directly schedule the runnable object provided as first procedure argument
+    on the UI thread *)
 
-val schedules_work_on_bg_thread : Tenv.t -> Procname.t -> bool
-(** method call known to directly schedule work on BG thread *)
+val schedules_second_arg_on_ui_thread : Tenv.t -> Procname.t -> bool
+(** method call known to directly schedule the runnable object provided as second procedure argument
+    on a background thread *)
+
+val schedules_first_arg_on_bg_thread : Tenv.t -> Procname.t -> bool
+(** method call known to directly the runnable object provided as first procedure argument on a
+    background thread *)
 
 val is_getMainLooper : Tenv.t -> Procname.t -> HilExp.t list -> bool
 
@@ -70,3 +73,9 @@ val is_future_is_done : Tenv.t -> Procname.t -> HilExp.t list -> bool
 
 val is_assume_true : Tenv.t -> Procname.t -> HilExp.t list -> bool
 (** is the callee equivalent to assuming its first argument true *)
+
+val is_java_main_method : Procname.t -> bool
+(** does the method look like a Java [main] *)
+
+val may_execute_arbitrary_code : Tenv.t -> Procname.t -> HilExp.t list -> bool
+(** for example [com.google.common.util.concurrent.SettableFuture.set] *)

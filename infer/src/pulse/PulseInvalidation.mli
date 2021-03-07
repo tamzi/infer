@@ -17,11 +17,10 @@ type std_vector_function =
   | PushBack
   | Reserve
   | ShrinkToFit
-[@@deriving compare]
 
 val pp_std_vector_function : F.formatter -> std_vector_function -> unit
 
-type java_iterator_function = Remove [@@deriving compare]
+type java_iterator_function = Remove
 
 type t =
   | CFree
@@ -29,9 +28,13 @@ type t =
   | CppDelete
   | EndIterator
   | GoneOutOfScope of Pvar.t * Typ.t
+  | OptionalEmpty
   | StdVector of std_vector_function
   | JavaIterator of java_iterator_function
-[@@deriving compare]
+[@@deriving compare, equal]
+
+val isl_equiv : t -> t -> bool
+(** check equality up to some ISL equivalences *)
 
 val pp : F.formatter -> t -> unit
 

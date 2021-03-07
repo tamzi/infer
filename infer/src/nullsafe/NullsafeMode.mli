@@ -37,7 +37,12 @@ val of_class : Tenv.t -> JavaClassName.t -> t
 (** Extracts mode information from class annotations *)
 
 val of_procname : Tenv.t -> Procname.t -> t
-(** Extracts mode information from a class where procname is defined *)
+(** Extracts mode information from a class where procname is defined. Should be called for Java
+    procnames only; throws otherwise *)
+
+val of_java_procname : Tenv.t -> Procname.Java.t -> t
+(** Extracts mode information from a class where procname is defined. Should be called for Java
+    procnames only; throws otherwise *)
 
 val is_in_trust_list : t -> JavaClassName.t -> bool
 (** Check whether [JavaClassName.t] is in explicit trust list specified in the mode *)
@@ -45,7 +50,7 @@ val is_in_trust_list : t -> JavaClassName.t -> bool
 val is_stricter_than : stricter:t -> weaker:t -> bool
 (** Check whether [stricter] is (strongly) stricter than [weaker] *)
 
-val severity : t -> Exceptions.severity
+val severity : t -> IssueType.severity
 (** Provides a default choice of issue severity for a particular mode. Rule is: severity should be
     ERROR if and only if it is enforced. *)
 

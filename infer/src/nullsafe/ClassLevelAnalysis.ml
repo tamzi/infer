@@ -6,6 +6,7 @@
  *)
 
 open! IStd
+module L = Logging
 
 let log_issue ?proc_name ~issue_log ~loc ~severity ~nullsafe_extra issue_type error_message =
   let extras =
@@ -13,8 +14,8 @@ let log_issue ?proc_name ~issue_log ~loc ~severity ~nullsafe_extra issue_type er
   in
   let proc_name = Option.value proc_name ~default:Procname.Linters_dummy_method in
   let trace = [Errlog.make_trace_element 0 loc error_message []] in
-  Reporting.log_issue_external proc_name severity ~issue_log ~loc ~extras ~ltr:trace issue_type
-    error_message
+  Reporting.log_issue_external proc_name ~severity_override:severity ~issue_log ~loc ~extras
+    ~ltr:trace Eradicate issue_type error_message
 
 
 (* If the issue is related to violation of nullability type system rules *)
@@ -47,7 +48,7 @@ let get_reportable_typing_rules_violations_for_mode ~nullsafe_mode issues =
 type meta_issue =
   { issue_type: IssueType.t
   ; description: string
-  ; severity: Exceptions.severity
+  ; severity: IssueType.severity
   ; meta_issue_info: Jsonbug_t.nullsafe_meta_issue_info }
 
 let mode_to_json mode =
@@ -91,7 +92,7 @@ let calc_mode_to_promote_to curr_mode all_issues =
 let make_meta_issue modes_and_issues top_level_class_mode top_level_class_name =
   let currently_reportable_issues = get_reportable_typing_rules_violations modes_and_issues in
   List.iter currently_reportable_issues ~f:(fun issue ->
-      Logging.debug Analysis Medium "Issue: %a@\n" TypeErr.pp_err_instance issue ) ;
+      L.debug Analysis Medium "Issue: %a@\n" TypeErr.pp_err_instance issue ) ;
   let currently_reportable_issue_count = List.length currently_reportable_issues in
   let all_issues = List.map modes_and_issues ~f:(fun (_, a) -> a) in
   let mode_to_promote_to =
@@ -112,34 +113,14 @@ let make_meta_issue modes_and_issues top_level_class_mode top_level_class_name =
   let issue_type, description, severity =
     if NullsafeMode.equal top_level_class_mode Default then
       match mode_to_promote_to with
-      | Some mode_to_promote_to ->
-          (* This class is not @Nullsafe yet, but can become such! *)
-          let trust_none_mode =
-            "`@Nullsafe(value = Nullsafe.Mode.LOCAL, trustOnly = @Nullsafe.TrustList({}))`"
-          in
-          let trust_all_mode = "`@Nullsafe(Nullsafe.Mode.LOCAL)`" in
-          let promo_recommendation =
-            match mode_to_promote_to with
-            | NullsafeMode.Local NullsafeMode.Trust.All ->
-                trust_all_mode
-            | NullsafeMode.Local (NullsafeMode.Trust.Only trust_list)
-              when NullsafeMode.Trust.is_trust_none trust_list ->
-                trust_none_mode
-            | NullsafeMode.Strict
-            (* We don't recommend "strict" for now as it is harder to keep a class in strict mode than it "trust none" mode.
-               Trust none is almost as safe alternative, but adding a dependency will require just updating trust list,
-               without need to strictify it first. *) ->
-                trust_none_mode
-            | NullsafeMode.Default | NullsafeMode.Local (NullsafeMode.Trust.Only _) ->
-                Logging.die InternalError "Unexpected promotion mode"
-          in
+      | Some _ ->
           let message =
             Format.sprintf
-              "Congrats! `%s` is free of nullability issues. Mark it %s to prevent regressions."
+              "Congrats! `%s` is free of nullability issues. Mark it \
+               `@Nullsafe(Nullsafe.Mode.LOCAL)` to prevent regressions."
               (JavaClassName.classname top_level_class_name)
-              promo_recommendation
           in
-          (IssueType.eradicate_meta_class_can_be_nullsafe, message, Exceptions.Advice)
+          (IssueType.eradicate_meta_class_can_be_nullsafe, message, IssueType.Advice)
       | None ->
           (* This class can not be made @Nullsafe without extra work *)
           let issue_count_to_make_nullsafe =
@@ -151,7 +132,7 @@ let make_meta_issue modes_and_issues top_level_class_mode top_level_class_name =
           , Format.asprintf "`%s` needs %d issues to be fixed in order to be marked @Nullsafe."
               (JavaClassName.classname top_level_class_name)
               issue_count_to_make_nullsafe
-          , Exceptions.Info )
+          , IssueType.Info )
     else if currently_reportable_issue_count > 0 then
       (* This class is @Nullsafe, but broken. This should not happen often if there is enforcement for
          @Nullsafe mode error in the target codebase. *)
@@ -160,23 +141,25 @@ let make_meta_issue modes_and_issues top_level_class_mode top_level_class_name =
           "@Nullsafe classes should have exactly zero nullability issues. `%s` has %d."
           (JavaClassName.classname top_level_class_name)
           currently_reportable_issue_count
-      , Exceptions.Info )
+      , IssueType.Info )
     else
       ( IssueType.eradicate_meta_class_is_nullsafe
       , Format.asprintf "Class %a is free of nullability issues." JavaClassName.pp
           top_level_class_name
-      , Exceptions.Info )
+      , IssueType.Info )
   in
   {issue_type; description; severity; meta_issue_info}
 
 
 let get_class_loc source_file Struct.{java_class_info} =
+  let default = {Location.file= source_file; line= 1; col= 0} in
   match java_class_info with
   | Some {loc} ->
       (* In rare cases location is not present, fall back to the first line of the file *)
-      Option.value loc ~default:Location.{file= source_file; line= 1; col= 0}
+      Option.value loc ~default
   | None ->
-      Logging.die InternalError "java_class_info should be present for Java classes"
+      L.internal_error "java_class_info should be present for Java classes" ;
+      default
 
 
 (* Meta issues are those related to null-safety of the class in general, not concrete nullability violations *)
@@ -202,7 +185,19 @@ let report_meta_issue_for_top_level_class tenv source_file class_name class_stru
     in
     let package = JavaClassName.package class_name in
     let class_name = JavaClassName.classname class_name in
-    let nullsafe_extra = Jsonbug_t.{class_name; package; meta_issue_info= Some meta_issue_info} in
+    let nullsafe_extra =
+      Jsonbug_t.
+        { class_name
+        ; package
+        ; method_info= None
+        ; inconsistent_param_index= None
+        ; parameter_not_nullable_info= None
+        ; meta_issue_info= Some meta_issue_info
+        ; unvetted_3rd_party= None
+        ; nullable_methods= None
+        ; field= None
+        ; annotation_graph= None }
+    in
     log_issue ~issue_log ~loc:class_loc ~severity ~nullsafe_extra issue_type description
 
 
@@ -226,7 +221,17 @@ let analyze_nullsafe_annotations tenv source_file class_name class_struct issue_
   let nullsafe_extra =
     let package = JavaClassName.package class_name in
     let class_name = JavaClassName.classname class_name in
-    Jsonbug_t.{class_name; package; meta_issue_info= None}
+    Jsonbug_t.
+      { class_name
+      ; package
+      ; method_info= None
+      ; inconsistent_param_index= None
+      ; parameter_not_nullable_info= None
+      ; meta_issue_info= None
+      ; unvetted_3rd_party= None
+      ; nullable_methods= None
+      ; field= None
+      ; annotation_graph= None }
   in
   match NullsafeMode.check_problematic_class_annotation tenv class_name with
   | Ok () ->
@@ -238,7 +243,7 @@ let analyze_nullsafe_annotations tenv source_file class_name class_struct issue_
            annotation can be removed."
           (JavaClassName.classname class_name)
       in
-      log_issue ~issue_log ~loc ~nullsafe_extra ~severity:Exceptions.Advice
+      log_issue ~issue_log ~loc ~nullsafe_extra ~severity:Advice
         IssueType.eradicate_redundant_nested_class_annotation description
   | Error (NullsafeMode.NestedModeIsWeaker (ExtraTrustClass wrongly_trusted_classes)) ->
       (* The list can not be empty *)
@@ -249,7 +254,7 @@ let analyze_nullsafe_annotations tenv source_file class_name class_struct issue_
            trust list. Remove `%s` from trust list."
           (JavaClassName.classname example_of_wrongly_trusted_class)
       in
-      log_issue ~issue_log ~loc ~nullsafe_extra ~severity:Exceptions.Warning
+      log_issue ~issue_log ~loc ~nullsafe_extra ~severity:Warning
         IssueType.eradicate_bad_nested_class_annotation description
   | Error (NullsafeMode.NestedModeIsWeaker Other) ->
       let description =
@@ -258,14 +263,53 @@ let analyze_nullsafe_annotations tenv source_file class_name class_struct issue_
            class. This annotation will be ignored."
           (JavaClassName.classname class_name)
       in
-      log_issue ~issue_log ~loc ~nullsafe_extra ~severity:Exceptions.Warning
+      log_issue ~issue_log ~loc ~nullsafe_extra ~severity:Warning
         IssueType.eradicate_bad_nested_class_annotation description
+
+
+let report_annotation_graph source_file class_name class_struct annotation_graph issue_log =
+  let class_loc = get_class_loc source_file class_struct in
+  let package = JavaClassName.package class_name in
+  let class_name = JavaClassName.classname class_name in
+  let nullsafe_extra =
+    Jsonbug_t.
+      { class_name
+      ; package
+      ; method_info= None
+      ; inconsistent_param_index= None
+      ; parameter_not_nullable_info= None
+      ; meta_issue_info= None
+      ; unvetted_3rd_party= None
+      ; nullable_methods= None
+      ; field= None
+      ; annotation_graph= Some annotation_graph }
+  in
+  log_issue ~issue_log ~loc:class_loc ~severity:IssueType.Info ~nullsafe_extra
+    IssueType.eradicate_annotation_graph ""
+
+
+let build_and_report_annotation_graph tenv source_file class_name class_struct class_info issue_log
+    =
+  if not Config.nullsafe_annotation_graph then issue_log
+  else
+    let class_typ_name = Typ.JavaClass class_name in
+    let provisional_violations =
+      AggregatedSummaries.ClassInfo.get_summaries class_info
+      |> List.map ~f:(fun NullsafeSummary.{issues} -> issues)
+      |> List.concat
+      |> List.filter_map ~f:ProvisionalViolation.of_issue
+    in
+    let annotation_graph =
+      AnnotationGraph.build_graph tenv class_struct class_typ_name provisional_violations
+    in
+    report_annotation_graph source_file class_name class_struct annotation_graph issue_log
 
 
 let analyze_class_impl tenv source_file class_name class_struct class_info issue_log =
   issue_log
   |> analyze_meta_issue_for_top_level_class tenv source_file class_name class_struct class_info
   |> analyze_nullsafe_annotations tenv source_file class_name class_struct
+  |> build_and_report_annotation_graph tenv source_file class_name class_struct class_info
 
 
 let analyze_class tenv source_file class_info issue_log =
@@ -274,7 +318,7 @@ let analyze_class tenv source_file class_info issue_log =
   | Some class_struct ->
       analyze_class_impl tenv source_file class_name class_struct class_info issue_log
   | None ->
-      Logging.debug Analysis Medium
+      L.debug Analysis Medium
         "%a: could not load class info in environment: skipping class analysis@\n" JavaClassName.pp
         class_name ;
       issue_log

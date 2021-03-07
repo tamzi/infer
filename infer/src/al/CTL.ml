@@ -548,10 +548,6 @@ let eval_Atomic pred_name_ args an lcxt =
         assert false )
   | "declaration_ref_name", [decl_name], an ->
       CPredicates.declaration_ref_name an decl_name
-  | "decl_unavailable_in_supported_ios_sdk", [], an ->
-      CPredicates.decl_unavailable_in_supported_ios_sdk lcxt an
-  | "class_unavailable_in_supported_ios_sdk", [], an ->
-      CPredicates.class_unavailable_in_supported_ios_sdk lcxt an
   | "has_cast_kind", [name], an ->
       CPredicates.has_cast_kind an name
   | "has_type", [typ], an ->
@@ -638,6 +634,8 @@ let eval_Atomic pred_name_ args an lcxt =
       CPredicates.is_in_objc_category_named lcxt name
   | "is_in_objc_protocol_named", [name], _ ->
       CPredicates.is_in_objc_protocol_named lcxt name
+  | "is_ivar_readonly", [], an ->
+      CPredicates.is_ivar_readonly an
   | "is_ivar_atomic", [], an ->
       CPredicates.is_ivar_atomic an
   | "is_method_property_accessor_of_ivar", [], an ->
@@ -710,8 +708,6 @@ let eval_Atomic pred_name_ args an lcxt =
       CPredicates.is_receiver_super an
   | "is_receiver_self", [], an ->
       CPredicates.is_receiver_self an
-  | "iphoneos_target_sdk_version_greater_or_equal", [version], _ ->
-      CPredicates.iphoneos_target_sdk_version_greater_or_equal lcxt (ALVar.alexp_to_string version)
   | "method_return_type", [typ], an ->
       CPredicates.method_return_type an typ
   | "within_responds_to_selector_block", [], an ->
@@ -999,4 +995,5 @@ and eval_formula ?keep_witness f an lcxt : Ctl_parser_types.ast_node option =
     | InObjCClass (f1, f2) ->
         eval_InObjCClass an lcxt f1 f2
   in
-  debug_eval_end res ; res
+  debug_eval_end res ;
+  res

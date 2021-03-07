@@ -8,6 +8,7 @@ TESTS_DIR = ../../../..
 CLANG_OPTIONS = -c $(OBJC_CLANG_OPTIONS) -fobjc-arc
 
 SOURCES = \
+  ../autoreleasepool/Autoreleasepool.m \
   ../if_and_arc/If_and_arc.m \
   ../predefined_expr/PredefinedExprExample.m \
   ../types/attributes.m \
@@ -22,3 +23,5 @@ SOURCES = \
 
 include $(TESTS_DIR)/clang-frontend.make
 include $(TESTS_DIR)/objc.make
+
+CLEAN_EXTRA += *.o ../*/*.test.dot ../*/*/*.test.dot

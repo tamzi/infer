@@ -17,11 +17,15 @@ val expensive : string
 
 val inject_prop : string
 
+val immutable : string
+
 val lockless : string
 
 val no_allocation : string
 
 val nullable : string
+
+val nullsafe : string
 
 val nonnull : string
 

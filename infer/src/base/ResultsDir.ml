@@ -80,24 +80,10 @@ module RunState = struct
     store ()
 end
 
-let results_dir_dir_markers = [get_path Specs]
-
-let is_results_dir ~check_correct_version () =
-  let not_found = ref "" in
+let is_results_dir () =
   let capture_db_path = get_path CaptureDB in
-  let has_all_markers =
-    List.for_all results_dir_dir_markers ~f:(fun d ->
-        Sys.is_directory d = `Yes
-        ||
-        ( not_found := d ^ "/" ;
-          false ) )
-    && ( (not check_correct_version)
-       || Sys.is_file capture_db_path = `Yes
-       ||
-       ( not_found := capture_db_path ;
-         false ) )
-  in
-  Result.ok_if_true has_all_markers ~error:(Printf.sprintf "'%s' not found" !not_found)
+  let has_all_markers = Sys.is_file capture_db_path = `Yes in
+  Result.ok_if_true has_all_markers ~error:(Printf.sprintf "'%s' not found" capture_db_path)
 
 
 let non_empty_directory_exists results_dir =
@@ -110,7 +96,7 @@ let non_empty_directory_exists results_dir =
 let remove_results_dir () =
   if non_empty_directory_exists Config.results_dir then (
     if (not Config.buck) && not Config.force_delete_results_dir then
-      Result.iter_error (is_results_dir ~check_correct_version:false ()) ~f:(fun err ->
+      Result.iter_error (is_results_dir ()) ~f:(fun err ->
           L.(die UserError)
             "ERROR: '%s' exists but does not seem to be an infer results directory: %s@\n\
              ERROR: Please delete '%s' and try again@." Config.results_dir err Config.results_dir ) ;
@@ -134,17 +120,15 @@ let create_results_dir () =
              L.progress "Deleting results dir because --force-delete-results-dir was passed@." ;
              remove_results_dir () )
            else
-             L.die UserError "ERROR: %s@\nPlease remove '%s' and try again" error Config.results_dir
-       ) ;
+             L.die UserError "ERROR: %s@\nPlease remove '%s' and try again" error Config.results_dir ) ;
   Unix.mkdir_p Config.results_dir ;
   Unix.mkdir_p (get_path Temporary) ;
-  Unix.mkdir_p (get_path Specs) ;
   prepare_logging_and_db () ;
   ()
 
 
 let assert_results_dir advice =
-  Result.iter_error (is_results_dir ~check_correct_version:true ()) ~f:(fun err ->
+  Result.iter_error (is_results_dir ()) ~f:(fun err ->
       L.(die UserError)
         "ERROR: No results directory at '%s': %s@\nERROR: %s@." Config.results_dir err advice ) ;
   RunState.load_and_validate ()
@@ -170,6 +154,4 @@ let scrub_for_caching () =
   (* make sure we are done with the database *)
   ResultsDatabase.db_close () ;
   List.iter ~f:Utils.rmtree
-    ( (* some versions of sqlite do not clean up after themselves *) (get_path CaptureDB ^ "-shm")
-    :: (get_path CaptureDB ^ "-wal")
-    :: ResultsDirEntryName.to_delete_before_caching_capture ~results_dir:Config.results_dir )
+    (ResultsDirEntryName.to_delete_before_caching_capture ~results_dir:Config.results_dir)

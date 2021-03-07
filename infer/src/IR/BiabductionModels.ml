@@ -7,27 +7,19 @@
 
 open! IStd
 
-let scan_models () =
-  let rec next_entry index dir =
-    match Unix.readdir_opt dir with
-    | None ->
-        Unix.closedir dir ; index
-    | Some entry -> (
-      match String.chop_suffix entry ~suffix:Config.specs_files_suffix with
-      | Some file_proc_name ->
-          next_entry (String.Set.add index file_proc_name) dir
-      | None ->
-          next_entry index dir )
-  in
-  match Unix.opendir Config.biabduction_models_dir with
-  | dir ->
-      next_entry String.Set.empty dir
-  | exception Unix.Unix_error ((ENOTDIR | ENOENT), _, _) ->
-      String.Set.empty
+let scan_model_proc_names () =
+  let db = ResultsDatabase.get_database () in
+  Sqlite3.prepare db "SELECT proc_uid FROM model_specs"
+  |> SqliteUtils.result_fold_single_column_rows db ~log:"scan model procnames"
+       ~init:String.Set.empty ~f:(fun acc proc_uid_sqlite ->
+         let[@warning "-8"] (Sqlite3.Data.TEXT proc_uid) = proc_uid_sqlite in
+         String.Set.add acc proc_uid )
 
 
 let models_index =
-  lazy (if not Config.biabduction_models_mode then scan_models () else String.Set.empty)
+  lazy (if Config.biabduction_models_mode then String.Set.empty else scan_model_proc_names ())
 
 
-let mem proc_name = String.Set.mem (Lazy.force models_index) (Procname.to_filename proc_name)
+let mem proc_name =
+  let proc_uid = Procname.to_unique_id proc_name in
+  String.Set.mem (Lazy.force models_index) proc_uid

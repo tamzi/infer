@@ -60,6 +60,8 @@ module Make (Key : Hashtbl.HashedType) = struct
     let remove {list} n = Doubly_linked.remove list n
 
     let clear {list} = Doubly_linked.clear list
+
+    let to_list {list} = Doubly_linked.to_list list
   end
 
   type 'a t = {map: ('a * key Doubly_linked.Elt.t) Hash.t; lru: LRU.t}
@@ -67,7 +69,12 @@ module Make (Key : Hashtbl.HashedType) = struct
   let create ~initial_size ~max_size = {map= Hash.create initial_size; lru= LRU.create max_size}
 
   let find_opt {map; lru} k =
-    match Hash.find_opt map k with None -> None | Some (v, e) -> LRU.use lru e ; Some v
+    match Hash.find_opt map k with
+    | None ->
+        None
+    | Some (v, e) ->
+        LRU.use lru e ;
+        Some v
 
 
   let replace {map; lru} k v =
@@ -78,7 +85,8 @@ module Make (Key : Hashtbl.HashedType) = struct
           Option.iter removed_key ~f:(Hash.remove map) ;
           n
       | Some (_, n) ->
-          LRU.use lru n ; n
+          LRU.use lru n ;
+          n
     in
     Hash.replace map k (v, n)
 
@@ -88,10 +96,14 @@ module Make (Key : Hashtbl.HashedType) = struct
     | None ->
         ()
     | Some (_, n) ->
-        LRU.remove lru n ; Hash.remove map k
+        LRU.remove lru n ;
+        Hash.remove map k
 
 
-  let clear {map; lru} = Hash.clear map ; LRU.clear lru
+  let clear {map; lru} =
+    Hash.clear map ;
+    LRU.clear lru
+
 
   let pp ~pp_key ~pp_v f {map} =
     let is_first = ref true in
@@ -99,8 +111,11 @@ module Make (Key : Hashtbl.HashedType) = struct
       if !is_first then is_first := false else F.pp_print_string f ", " ;
       F.fprintf f "%a->%a" pp_key key pp_v v
     in
-    F.pp_print_string f "{" ; Hash.iter pp_key_v map ; F.pp_print_string f "}"
+    F.pp_print_string f "{" ;
+    Hash.iter pp_key_v map ;
+    F.pp_print_string f "}"
 
 
-  let bindings {map} = Seq.fold_left (fun acc (k, (v, _node)) -> (k, v) :: acc) [] (Hash.to_seq map)
+  let bindings {map; lru} =
+    LRU.to_list lru |> List.map ~f:(fun key -> (key, Hash.find map key |> fst))
 end

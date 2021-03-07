@@ -35,7 +35,8 @@ let set_common_fields sample =
   |> maybe_add_normal ~name:"job_id" ~value:Config.job_id
   |> add_normal ~name:"command" ~value:(InferCommand.to_string Config.command)
   |> add_normal ~name:"infer_commit" ~value:Version.commit
-  |> add_normal ~name:"execution_id" ~value:(Int64.to_string Config.execution_id)
+  |> maybe_add_normal ~name:"execution_id"
+       ~value:(Option.map ~f:Int64.to_string Config.scuba_execution_id)
 
 
 let sample_from_event ({label; created_at_ts; data} : LogEntry.t) =
@@ -72,10 +73,13 @@ let log_count ~label ~value = log_one (LogEntry.mk_count ~label ~value)
 
 let log_message ~label ~message = log_one (LogEntry.mk_string ~label ~message)
 
+let cost_log_message ~label ~message = if Config.cost_scuba_logging then log_message ~label ~message
+
 let execute_with_time_logging label f =
   let ret_val, duration_ms = Utils.timeit ~f in
   let entry = LogEntry.mk_time ~label ~duration_ms in
-  log_one entry ; ret_val
+  log_one entry ;
+  ret_val
 
 
 let flush_log_events () =

@@ -9,6 +9,13 @@ open! IStd
 
 type method_parameter_origin = Normal of AnnotatedSignature.param_signature | ObjectEqualsOverride
 
+type method_call_origin =
+  { pname: Procname.Java.t
+  ; call_loc: Location.t
+  ; annotated_signature: AnnotatedSignature.t
+  ; is_defined: bool }
+[@@deriving compare]
+
 type t =
   | NullConst of Location.t  (** A null literal in the source *)
   | NonnullConst of Location.t  (** A constant (not equal to null) in the source. *)
@@ -21,11 +28,7 @@ type t =
   | CurrMethodParameter of method_parameter_origin
       (** Parameter of a method we are currently in, *)
   | This (* `this` object. Can not be null, according to Java rules. *)
-  | MethodCall of
-      { pname: Procname.t
-      ; call_loc: Location.t
-      ; annotated_signature: AnnotatedSignature.t
-      ; is_defined: bool }  (** A result of a method call *)
+  | MethodCall of method_call_origin
   | CallToGetKnownToContainsKey
       (** This is a result of accessing a map element that is known to contains this particular key,
           normally because it was explicitly checked for presense before *)
@@ -46,11 +49,11 @@ type t =
 
 val get_nullability : t -> Nullability.t
 
+val get_provisional_annotation : t -> ProvisionalAnnotation.t option
+(** If the origin is associated with provisional annotation, return it *)
+
 val get_description : t -> string option
 (** Get a description to be used for error messages. *)
-
-val join : t -> t -> t
-(** Join with left priority *)
 
 val to_string : t -> string
 (** Raw string representation. *)

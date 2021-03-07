@@ -22,9 +22,18 @@ module ItvRange = struct
 
   let of_bounds : loop_head_loc:Location.t -> lb:Bound.t -> ub:Bound.t -> t =
    fun ~loop_head_loc ~lb ~ub ->
+    let lb =
+      (* Handle the case of[s, c] where s contains positive length path and c
+         is constant. E.g [len, 2] would give 3 since len is always
+         nonnegative *)
+      if Bound.is_symbolic lb && not (Bound.is_symbolic ub) then
+        Bound.remove_positive_length_symbol lb
+      else lb
+    in
     Bound.plus_u ~weak:true ub Bound.one
     |> Bound.plus_u ~weak:true (Bound.neg lb)
     |> Bound.simplify_min_one |> Bound.simplify_bound_ends_from_paths
+    |> Bound.simplify_minimum_length
     |> Bounds.NonNegativeBound.of_loop_bound loop_head_loc
 
 
@@ -34,7 +43,7 @@ end
 
 module ItvPure = struct
   (** (l, u) represents the closed interval [l; u] (of course infinite bounds are open) *)
-  type t = Bound.t * Bound.t [@@deriving compare]
+  type t = Bound.t * Bound.t [@@deriving compare, equal]
 
   let lb : t -> Bound.t = fst
 
@@ -574,7 +583,7 @@ module ItvPure = struct
 
   let of_length_path ~is_void = of_path (Bound.of_length_path ~is_void)
 
-  let of_modeled_path ~is_expensive = of_path (Bound.of_modeled_path ~is_expensive)
+  let of_modeled_path = of_path Bound.of_modeled_path
 
   let is_offset_path_of path x =
     Bound.is_offset_path_of path (lb x) && Bound.is_offset_path_of path (ub x)
@@ -821,7 +830,7 @@ let of_offset_path ~is_void path = NonBottom (ItvPure.of_offset_path ~is_void pa
 
 let of_length_path ~is_void path = NonBottom (ItvPure.of_length_path ~is_void path)
 
-let of_modeled_path ~is_expensive path = NonBottom (ItvPure.of_modeled_path ~is_expensive path)
+let of_modeled_path path = NonBottom (ItvPure.of_modeled_path path)
 
 let is_offset_path_of path = bind1_gen ~bot:false (ItvPure.is_offset_path_of path)
 

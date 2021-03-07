@@ -23,9 +23,6 @@ val find_ident_assignment : Procdesc.Node.t -> Ident.t -> (Procdesc.Node.t * Exp
 val exp_rv_dexp : Tenv.t -> Procdesc.Node.t -> Exp.t -> DecompiledExp.t option
 (** describe rvalue [e] as a dexp *)
 
-val explain_allocation_mismatch : PredSymb.res_action -> PredSymb.res_action -> Localise.error_desc
-(** Produce a description of a mismatch between an allocation function and a deallocation function *)
-
 val explain_array_access :
   Procname.t -> Tenv.t -> Localise.deref_str -> 'a Prop.t -> Location.t -> Localise.error_desc
 (** Produce a description of the array access performed in the current instruction, if any. *)
@@ -40,12 +37,6 @@ val explain_class_cast_exception :
   -> Location.t
   -> Localise.error_desc
 (** explain a class cast exception *)
-
-val explain_deallocate_stack_var : Pvar.t -> PredSymb.res_action -> Localise.error_desc
-(** Explain a deallocate stack variable error *)
-
-val explain_deallocate_constant_string : string -> PredSymb.res_action -> Localise.error_desc
-(** Explain a deallocate constant string error *)
 
 val explain_dereference :
      Procname.t
@@ -81,28 +72,16 @@ val explain_condition_always_true_false :
   Tenv.t -> IntLit.t -> Exp.t -> Procdesc.Node.t -> Location.t -> Localise.error_desc
 (** explain a condition which is always true or false *)
 
-val explain_stack_variable_address_escape :
-  Location.t -> Pvar.t -> DecompiledExp.t option -> Localise.error_desc
-(** explain the escape of a stack variable address from its scope *)
-
-val explain_unary_minus_applied_to_unsigned_expression :
-  Tenv.t -> Exp.t -> Typ.t -> Procdesc.Node.t -> Location.t -> Localise.error_desc
-(** explain unary minus applied to unsigned expression *)
-
 val explain_leak :
      Tenv.t
   -> Predicates.hpred
   -> 'a Prop.t
   -> PredSymb.t option
   -> string option
-  -> Exceptions.visibility * Localise.error_desc
+  -> bool (* should the leak be reported to the user? *) * Localise.error_desc
 (** Produce a description of a leak by looking at the current state. If the current instruction is a
     variable nullify, blame the variable. If it is an abstraction, blame any variable nullify at the
     current node. If there is an alloc attribute, print the function call and line number. *)
-
-val explain_null_test_after_dereference :
-  Tenv.t -> Exp.t -> Procdesc.Node.t -> int -> Location.t -> Localise.error_desc
-(** explain a test for NULL of a dereferenced pointer *)
 
 val warning_err : Location.t -> ('a, Format.formatter, unit) format -> 'a
 (** warn at the given location *)

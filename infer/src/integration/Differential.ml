@@ -6,6 +6,7 @@
  *)
 
 open! IStd
+open! AbstractDomain.Types
 
 (** set of lists of locations for remembering what trace ends have been reported *)
 module LocListSet = struct
@@ -54,12 +55,37 @@ let dedup (issues : Jsonbug_t.jsonbug list) =
   |> snd |> sort_by_location
 
 
+let create_json_bug ~qualifier ~line ~file ~source_file ~trace ~(item : Jsonbug_t.item)
+    ~(issue_type : IssueType.t) =
+  { Jsonbug_j.bug_type= issue_type.unique_id
+  ; qualifier
+  ; severity= IssueType.string_of_severity Advice
+  ; line
+  ; column= item.loc.cnum
+  ; procedure= item.procedure_id
+  ; procedure_start_line= line
+  ; file
+  ; bug_trace= JsonReports.loc_trace_to_jsonbug_record trace Advice
+  ; key= ""
+  ; node_key= None
+  ; hash= item.hash
+  ; dotty= None
+  ; infer_source_loc= None
+  ; bug_type_hum= issue_type.hum
+  ; linters_def_file= None
+  ; doc_url= None
+  ; traceview_id= None
+  ; censored_reason= JsonReports.censored_reason issue_type source_file
+  ; access= None
+  ; extras= None }
+
+
 module CostsSummary = struct
   module DegreeMap = Caml.Map.Make (Int)
 
-  type 'a count = {top: 'a; zero: 'a; degrees: 'a DegreeMap.t}
+  type 'a count = {top: 'a; unreachable: 'a; zero: 'a; degrees: 'a DegreeMap.t}
 
-  let init = {top= 0; zero= 0; degrees= DegreeMap.empty}
+  let init = {top= 0; unreachable= 0; zero= 0; degrees= DegreeMap.empty}
 
   type previous_current = {previous: int; current: int}
 
@@ -69,7 +95,8 @@ module CostsSummary = struct
       match CostDomain.BasicCost.degree e with
       | None ->
           if CostDomain.BasicCost.is_top e then {t with top= t.top + 1}
-          else if CostDomain.BasicCost.is_unreachable e then {t with zero= t.zero + 1}
+          else if CostDomain.BasicCost.is_unreachable e then
+            {t with unreachable= t.unreachable + 1; zero= t.zero + 1}
           else (* a cost with no degree must be either T/bottom*) assert false
       | Some d ->
           let degrees = DegreeMap.update (Polynomials.Degree.encode_to_int d) incr t.degrees in
@@ -80,7 +107,7 @@ module CostsSummary = struct
       | None ->
           {t with top= t.top + 1}
       | Some d when Int.equal d 0 ->
-          {t with zero= t.zero + 1}
+          {t with unreachable= t.unreachable + 1; zero= t.zero + 1}
       | Some d ->
           let degrees = DegreeMap.update d incr t.degrees in
           {t with degrees}
@@ -113,6 +140,7 @@ module CostsSummary = struct
       DegreeMap.merge merge_aux current previous
     in
     { top= {current= current_counts.top; previous= previous_counts.top}
+    ; unreachable= {current= current_counts.unreachable; previous= previous_counts.unreachable}
     ; zero= {current= current_counts.zero; previous= previous_counts.zero}
     ; degrees= compute_degrees current_counts.degrees previous_counts.degrees }
 
@@ -124,14 +152,15 @@ module CostsSummary = struct
     let json_degrees =
       DegreeMap.bindings paired_counts.degrees
       |> List.map ~f:(fun (key, {current; previous}) ->
-             `Assoc [("degree", `Int key); ("current", `Int current); ("previous", `Int previous)]
-         )
+             `Assoc [("degree", `Int key); ("current", `Int current); ("previous", `Int previous)] )
     in
     let create_assoc current previous =
       `Assoc [("current", `Int current); ("previous", `Int previous)]
     in
     `Assoc
       [ ("top", create_assoc paired_counts.top.current paired_counts.top.previous)
+      ; ( "unreachable"
+        , create_assoc paired_counts.unreachable.current paired_counts.unreachable.previous )
       ; ("zero", create_assoc paired_counts.zero.current paired_counts.zero.previous)
       ; ("degrees", `List json_degrees) ]
 end
@@ -165,7 +194,7 @@ module CostItem = struct
   let is_unreachable = lift ~f_poly:CostDomain.BasicCost.is_unreachable ~f_deg:(fun _ -> false)
 
   (* NOTE: incorrect when using [f_deg] *)
-  let is_one = lift ~f_poly:CostDomain.BasicCost.is_one ~f_deg:(fun _ -> false)
+  let is_zero = lift ~f_poly:CostDomain.BasicCost.is_zero ~f_deg:(fun _ -> false)
 
   let compare_by_degree {polynomial= p1; degree= d1} {polynomial= p2; degree= d2} =
     match (p1, p2) with
@@ -205,30 +234,31 @@ module CostItem = struct
       (pp_degree ~only_bigO:false) curr_item
 end
 
+let polynomial_traces issue_type = function
+  | None ->
+      []
+  | Some (Val (_, degree_term)) ->
+      Polynomials.NonNegativeNonTopPolynomial.polynomial_traces
+        ~is_autoreleasepool_trace:(IssueType.is_autoreleasepool_size_issue issue_type)
+        degree_term
+  | Some (Below traces) ->
+      [("", Polynomials.UnreachableTraces.make_err_trace traces)]
+  | Some (Above traces) ->
+      [("", Polynomials.TopTraces.make_err_trace traces)]
+
+
 let issue_of_cost kind CostIssues.{complexity_increase_issue; unreachable_issue; infinite_issue}
-    ~delta ~prev_item
+    ~delta ~prev_item:({CostItem.degree_with_term= prev_degree_with_term} as prev_item)
     ~curr_item:
       ({CostItem.cost_item= cost_info; degree_with_term= curr_degree_with_term} as curr_item) =
   let file = cost_info.Jsonbug_t.loc.file in
   let method_name = cost_info.Jsonbug_t.procedure_name in
   let is_on_ui_thread = cost_info.Jsonbug_t.is_on_ui_thread in
-  let class_name =
-    match Str.split (Str.regexp_string ("." ^ method_name)) cost_info.Jsonbug_t.procedure_id with
-    | [class_name; _] ->
-        class_name
-    | _ ->
-        ""
-  in
-  let procname =
-    JProcname.make_void_signature_procname ~classname:class_name ~methodname:method_name
-  in
   let source_file = SourceFile.create ~warn_on_error:false file in
   let issue_type =
     if CostItem.is_top curr_item then infinite_issue
     else if CostItem.is_unreachable curr_item then unreachable_issue
-    else
-      let is_on_cold_start = ExternalPerfData.in_profiler_data_map procname in
-      complexity_increase_issue ~is_on_cold_start ~is_on_ui_thread
+    else complexity_increase_issue ~is_on_ui_thread
   in
   if (not Config.filtering) || issue_type.IssueType.enabled then
     let qualifier =
@@ -241,24 +271,14 @@ let issue_of_cost kind CostIssues.{complexity_increase_issue; unreachable_issue;
       in
       let pp_extra_msg fmt () =
         if Config.developer_mode then CostItem.pp_cost_msg fmt curr_item
-        else
-          Format.fprintf fmt
-            "Please make sure this is an expected change. You can inspect the trace to understand \
-             the complexity increase:"
+        else Format.fprintf fmt "Please make sure this is an expected change."
       in
-      let cold_start_or_ui_msg =
-        let common_msg = "It is very important to avoid potential regressions in this phase." in
+      let ui_msg =
         if is_on_ui_thread then
           Format.asprintf "%a %s" MarkupFormatter.pp_bold
-            "This function is called on the UI Thread!" common_msg
-        else
-          Option.value_map (ExternalPerfData.get_avg_inclusive_time_opt procname) ~default:""
-            ~f:(fun avg_inclusive_time ->
-              let pp_avg_inclusive_time f =
-                Format.fprintf f "(avg inclusive CPU time was %.1f ms)" avg_inclusive_time
-              in
-              Format.asprintf "%a %t %s" MarkupFormatter.pp_bold
-                "This function is called during cold start!" pp_avg_inclusive_time common_msg )
+            "This function is called on the UI Thread!"
+            " It is important to avoid potential regressions in this phase. "
+        else ""
       in
       let msg f =
         (* Java Only *)
@@ -269,7 +289,7 @@ let issue_of_cost kind CostIssues.{complexity_increase_issue; unreachable_issue;
         else
           Format.fprintf f "%a" (MarkupFormatter.wrap_monospaced Format.pp_print_string) method_name
       in
-      Format.asprintf "%s of %t has %a from %a to %a. %s %a"
+      Format.asprintf "%s of %t has %a from %a to %a. %s%a"
         (CostKind.to_complexity_string kind)
         msg
         (MarkupFormatter.wrap_bold pp_delta)
@@ -277,54 +297,30 @@ let issue_of_cost kind CostIssues.{complexity_increase_issue; unreachable_issue;
         (MarkupFormatter.wrap_monospaced (CostItem.pp_degree ~only_bigO:true))
         prev_item
         (MarkupFormatter.wrap_monospaced (CostItem.pp_degree ~only_bigO:true))
-        curr_item cold_start_or_ui_msg pp_extra_msg ()
+        curr_item ui_msg pp_extra_msg ()
     in
     let line = cost_info.Jsonbug_t.loc.lnum in
     let column = cost_info.Jsonbug_t.loc.cnum in
     let trace =
-      let polynomial_traces =
-        match curr_degree_with_term with
-        | None ->
-            []
-        | Some (Val (_, degree_term)) ->
-            Polynomials.NonNegativeNonTopPolynomial.get_symbols degree_term
-            |> List.map ~f:Bounds.NonNegativeBound.make_err_trace
-        | Some (Below traces) ->
-            [("", Polynomials.UnreachableTraces.make_err_trace traces)]
-        | Some (Above traces) ->
-            [("", Polynomials.TopTraces.make_err_trace traces)]
-      in
-      let curr_cost_trace =
+      let marker_cost_trace msg cost_item =
         [ Errlog.make_trace_element 0
             {Location.line; col= column; file= source_file}
-            (Format.asprintf "Updated %a" CostItem.pp_cost_msg curr_item)
+            (Format.asprintf "%s %a" msg CostItem.pp_cost_msg cost_item)
             [] ]
       in
-      ("", curr_cost_trace) :: polynomial_traces |> Errlog.concat_traces
+      ("", marker_cost_trace "Previous" prev_item)
+      :: polynomial_traces issue_type prev_degree_with_term
+      @ ("", marker_cost_trace "Updated" curr_item)
+        :: polynomial_traces issue_type curr_degree_with_term
+      |> Errlog.concat_traces
     in
-    let severity = Exceptions.Advice in
+    let convert (Jsonbug_t.{hash; loc; procedure_name; procedure_id} : Jsonbug_t.cost_item) :
+        Jsonbug_t.item =
+      {hash; loc; procedure_name; procedure_id}
+    in
     Some
-      { Jsonbug_j.bug_type= issue_type.IssueType.unique_id
-      ; qualifier
-      ; severity= Exceptions.severity_string severity
-      ; line
-      ; column
-      ; procedure= cost_info.Jsonbug_t.procedure_id
-      ; procedure_start_line= line
-      ; file
-      ; bug_trace= JsonReports.loc_trace_to_jsonbug_record trace severity
-      ; key= ""
-      ; node_key= None
-      ; hash= cost_info.Jsonbug_t.hash
-      ; dotty= None
-      ; infer_source_loc= None
-      ; bug_type_hum= issue_type.IssueType.hum
-      ; linters_def_file= None
-      ; doc_url= None
-      ; traceview_id= None
-      ; censored_reason= JsonReports.censored_reason issue_type source_file
-      ; access= None
-      ; extras= None }
+      (create_json_bug ~qualifier ~line ~file ~source_file ~trace ~item:(convert cost_info)
+         ~issue_type)
   else None
 
 
@@ -343,8 +339,10 @@ let of_costs ~(current_costs : Jsonbug_t.costs_report) ~(previous_costs : Jsonbu
         in
         let curr_item = max_degree_polynomial current in
         let prev_item = max_degree_polynomial previous in
-        if Config.filtering && (CostItem.is_one curr_item || CostItem.is_one prev_item) then
-          (* transitions to/from zero costs are obvious, no need to flag them *)
+        if Config.filtering && (CostItem.is_zero curr_item || CostItem.is_zero prev_item) then
+          (* transitions to/from zero costs are obvious (they
+             correspond to adding/removing code to a function with
+             empty body), no need to flag them *)
           (left, both, right)
         else
           let cmp = CostItem.compare_by_degree curr_item prev_item in
@@ -396,9 +394,91 @@ let of_costs ~(current_costs : Jsonbug_t.costs_report) ~(previous_costs : Jsonbu
     CostIssues.enabled_cost_map ([], [], [])
 
 
+module ConfigImpactItem = struct
+  module UncheckedCallee = ConfigImpactAnalysis.UncheckedCallee
+  module UncheckedCallees = ConfigImpactAnalysis.UncheckedCallees
+
+  type t = {config_impact_item: Jsonbug_t.config_impact_item; unchecked_callees: UncheckedCallees.t}
+
+  type change_type = Added | Removed
+
+  let pp_change_type f x =
+    Format.pp_print_string f (match x with Added -> "added" | Removed -> "removed")
+
+
+  let get_qualifier_trace ~change_type unchecked_callees =
+    let nb_callees = UncheckedCallees.cardinal unchecked_callees in
+    if nb_callees <= 0 then assert false ;
+    let is_singleton = nb_callees <= 1 in
+    let unchecked_callees = UncheckedCallees.elements unchecked_callees in
+    let qualifier =
+      Format.asprintf "Function call%s to %a %s %a without GK/QE."
+        (if is_singleton then "" else "s")
+        UncheckedCallee.pp_without_location_list unchecked_callees
+        (if is_singleton then "is" else "are")
+        pp_change_type change_type
+    in
+    (* Note: It takes only one trace among the callees. *)
+    let trace = List.hd_exn unchecked_callees |> UncheckedCallee.make_err_trace in
+    (qualifier, trace)
+
+
+  let issue_of ~change_type (config_impact_item : Jsonbug_t.config_impact_item) callees =
+    let should_report =
+      ((not Config.filtering) || IssueType.config_impact_analysis.enabled)
+      && not (UncheckedCallees.is_empty callees)
+    in
+    if should_report then
+      let qualifier, trace = get_qualifier_trace ~change_type callees in
+      let file = config_impact_item.loc.file in
+      let source_file = SourceFile.create ~warn_on_error:false file in
+      let line = config_impact_item.loc.lnum in
+      let convert
+          (Jsonbug_t.{hash; loc; procedure_name; procedure_id} : Jsonbug_t.config_impact_item) :
+          Jsonbug_t.item =
+        {hash; loc; procedure_name; procedure_id}
+      in
+      Some
+        (create_json_bug ~qualifier ~line ~file ~source_file ~trace
+           ~item:(convert config_impact_item) ~issue_type:IssueType.config_impact_analysis)
+    else None
+
+
+  let issues_of ~(current_config_impact : Jsonbug_t.config_impact_report)
+      ~(previous_config_impact : Jsonbug_t.config_impact_report) =
+    let fold_aux ~key:_ ~data ((acc_introduced, acc_fixed) as acc) =
+      match data with
+      | `Both (current, previous) ->
+          let introduced =
+            UncheckedCallees.diff current.unchecked_callees previous.unchecked_callees
+            |> issue_of ~change_type:Added current.config_impact_item
+          in
+          let removed =
+            UncheckedCallees.diff previous.unchecked_callees current.unchecked_callees
+            |> issue_of ~change_type:Removed previous.config_impact_item
+          in
+          (Option.to_list introduced @ acc_introduced, Option.to_list removed @ acc_fixed)
+      | `Left _ | `Right _ ->
+          (* Note: The reports available on one side are ignored since we don't want to report on
+             newly added (or freshly removed) functions. *)
+          acc
+    in
+    let map_of_config_impact config_impact =
+      List.fold ~init:String.Map.empty config_impact
+        ~f:(fun acc ({Jsonbug_t.hash= key; unchecked_callees} as config_impact_item) ->
+          let unchecked_callees = UncheckedCallees.decode unchecked_callees in
+          String.Map.add_exn acc ~key ~data:{config_impact_item; unchecked_callees} )
+    in
+    let current_map = map_of_config_impact current_config_impact in
+    let previous_map = map_of_config_impact previous_config_impact in
+    Map.fold2 ~init:([], []) current_map previous_map ~f:fold_aux
+end
+
 (** Set operations should keep duplicated issues with identical hashes *)
 let of_reports ~(current_report : Jsonbug_t.report) ~(previous_report : Jsonbug_t.report)
-    ~(current_costs : Jsonbug_t.costs_report) ~(previous_costs : Jsonbug_t.costs_report) : t =
+    ~(current_costs : Jsonbug_t.costs_report) ~(previous_costs : Jsonbug_t.costs_report)
+    ~(current_config_impact : Jsonbug_t.config_impact_report)
+    ~(previous_config_impact : Jsonbug_t.config_impact_report) : t =
   let fold_aux ~key:_ ~data (left, both, right) =
     match data with
     | `Left left' ->
@@ -415,8 +495,13 @@ let of_reports ~(current_report : Jsonbug_t.report) ~(previous_report : Jsonbug_
   in
   let costs_summary = CostsSummary.to_json ~current_costs ~previous_costs in
   let introduced_costs, preexisting_costs, fixed_costs = of_costs ~current_costs ~previous_costs in
-  { introduced= List.rev_append introduced_costs (dedup introduced)
-  ; fixed= List.rev_append fixed_costs (dedup fixed)
+  let introduced_config_impact, fixed_config_impact =
+    ConfigImpactItem.issues_of ~current_config_impact ~previous_config_impact
+  in
+  { introduced=
+      List.rev_append introduced_costs (dedup introduced)
+      |> List.rev_append introduced_config_impact
+  ; fixed= List.rev_append fixed_costs (dedup fixed) |> List.rev_append fixed_config_impact
   ; preexisting= List.rev_append preexisting_costs (dedup preexisting)
   ; costs_summary }
 

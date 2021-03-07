@@ -17,9 +17,11 @@ include sig
     ; biabduction: BiabductionSummary.t option
     ; buffer_overrun_analysis: BufferOverrunAnalysisSummary.t option
     ; buffer_overrun_checker: BufferOverrunCheckerSummary.t option
-    ; class_loads: ClassLoadsDomain.summary option
+    ; config_checks_between_markers: ConfigChecksBetweenMarkers.Summary.t option
+    ; config_impact_analysis: ConfigImpactAnalysis.Summary.t option
     ; cost: CostDomain.summary option
     ; lab_resource_leaks: ResourceLeakDomain.summary option
+    ; dotnet_resource_leaks: ResourceLeakCSDomain.summary option
     ; litho_required_props: LithoDomain.summary option
     ; pulse: PulseSummary.t option
     ; purity: PurityDomain.summary option
@@ -29,7 +31,7 @@ include sig
     ; starvation: StarvationDomain.summary option
     ; nullsafe: NullsafeSummary.t option
     ; uninit: UninitDomain.Summary.t option }
-  [@@deriving fields]
+  [@@deriving fields, yojson_of]
 end
 
 val pp : Pp.env -> Format.formatter -> t -> unit

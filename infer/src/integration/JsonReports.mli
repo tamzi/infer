@@ -10,8 +10,8 @@ open! IStd
 val potential_exception_message : string
 
 val loc_trace_to_jsonbug_record :
-  Errlog.loc_trace_elem list -> Exceptions.severity -> Jsonbug_t.json_trace_item list
+  Errlog.loc_trace_elem list -> IssueType.severity -> Jsonbug_t.json_trace_item list
 
 val censored_reason : IssueType.t -> SourceFile.t -> string option
 
-val write_reports : issues_json:string -> costs_json:string -> unit
+val write_reports : issues_json:string -> costs_json:string -> config_impact_json:string -> unit

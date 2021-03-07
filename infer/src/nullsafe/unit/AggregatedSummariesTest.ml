@@ -17,6 +17,7 @@ let mock_summary id =
   let mock_issue =
     TypeErr.Condition_redundant
       { is_always_true= true
+      ; loc= Location.dummy
       ; condition_descr= Some (Int.to_string id)
       ; nonnull_origin= TypeOrigin.New }
   in
@@ -54,8 +55,7 @@ let assert_anonymous_equal actual expected_name_to_ids case_name =
           actual
         |> IOption.if_none_eval ~f:(fun () ->
                assert_failure
-                 (F.sprintf "%s: Did not find anonymous class info for %s" case_name anonymous_name)
-           )
+                 (F.sprintf "%s: Did not find anonymous class info for %s" case_name anonymous_name) )
       in
       assert_summaries_equal actual_summaries expected_summary_ids anonymous_name case_name )
 

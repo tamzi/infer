@@ -27,8 +27,6 @@ val append_list : not_reversed t -> Sil.instr list -> not_reversed t
 
 val of_list : Sil.instr list -> not_reversed t
 
-val of_rev_list : Sil.instr list -> not_reversed t
-
 val filter_map : not_reversed t -> f:(Sil.instr -> Sil.instr option) -> not_reversed t
 
 val map : not_reversed t -> f:(Sil.instr -> Sil.instr) -> not_reversed t
@@ -36,10 +34,14 @@ val map : not_reversed t -> f:(Sil.instr -> Sil.instr) -> not_reversed t
 
 val map_and_fold :
   not_reversed t -> f:('a -> Sil.instr -> 'a * Sil.instr) -> init:'a -> not_reversed t
-  [@@warning "-32"]
 (** replace every instruction [instr] with [snd (f context instr)]. The context is computed by
     folding [f] on [init] and previous instructions (before [instr]) in the collection. Preserve
     physical equality. **)
+
+val concat_map_and_fold :
+  not_reversed t -> f:('a -> Sil.instr -> 'a * Sil.instr array) -> init:'a -> not_reversed t
+(** Like [map_and_fold] but replace every instruction [instr] with the list [snd (f context instr)]
+    by threading an accumulator. Preserve physical equality. **)
 
 val concat_map : not_reversed t -> f:(Sil.instr -> Sil.instr array) -> not_reversed t
 (** replace every instruction [instr] with the list [f instr]. Preserve physical equality. **)
@@ -69,3 +71,5 @@ val fold : (_ t, Sil.instr, 'a) Container.fold
 val iter : (_ t, Sil.instr) Container.iter
 
 val get_underlying_not_reversed : not_reversed t -> Sil.instr array
+
+val instrs_get_normal_vars : not_reversed t -> Ident.t list

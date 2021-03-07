@@ -38,7 +38,7 @@ module type S = sig
 
   val __exit : t
 
-  val __free_cf : t
+  val __objc_bridge_transfer : t
 
   val __get_array_length : t
 
@@ -111,6 +111,10 @@ module type S = sig
   val nsArray_arrayWithObjects : t
 
   val nsArray_arrayWithObjectsCount : t
+
+  val objc_autorelease_pool_pop : t
+
+  val objc_autorelease_pool_push : t
 
   val objc_cpp_throw : t
 

@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-package codetoanalyze.java.nullsafe_default;
+package codetoanalyze.java.nullsafe;
 
 import com.facebook.infer.annotation.Nullsafe;
 import com.facebook.infer.annotation.NullsafeStrict;
@@ -117,6 +117,10 @@ public class NullsafeMode {
       UncheckedParams first = new UncheckedParams(42);
       UncheckedParams second = new UncheckedParams(first.copy());
       return second;
+    }
+
+    int OK_enumElementsAreNotNull() {
+      return ThirdPartyTestClass.InnerEnum.EA.ordinal();
     }
   }
 

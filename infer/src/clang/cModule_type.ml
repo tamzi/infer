@@ -8,14 +8,11 @@
 open! IStd
 
 type block_data =
-  { captured_vars: (Pvar.t * Typ.t) list
+  { captured_vars: (Pvar.t * Typ.t * Pvar.capture_mode) list
   ; context: CContext.t
   ; passed_as_noescape_block_to: Procname.t option
   ; procname: Procname.t
   ; return_type: Clang_ast_t.qual_type }
-
-type instr_type =
-  [`ClangStmt of Clang_ast_t.stmt | `CXXConstructorInit of Clang_ast_t.cxx_ctor_initializer]
 
 module type CTranslation = sig
   (** Translates instructions: (statements and expressions) from the ast into sil *)
@@ -23,7 +20,7 @@ module type CTranslation = sig
   val instructions_trans :
        CContext.t
     -> Clang_ast_t.stmt
-    -> instr_type list
+    -> CFrontend_config.instr_type list
     -> Procdesc.Node.t
     -> is_destructor_wrapper:bool
     -> Procdesc.Node.t list

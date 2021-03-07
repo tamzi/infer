@@ -7,12 +7,11 @@
 
 open! IStd
 
-type t = Clang | Java [@@deriving compare]
+type t = Clang | Java | CIL [@@deriving compare, enumerate]
 
 val equal : t -> t -> bool
 
 val to_string : t -> string
-
 
 val of_string : string -> t option
 

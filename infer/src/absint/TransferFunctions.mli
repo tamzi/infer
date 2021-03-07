@@ -13,8 +13,8 @@ open! IStd
 module type S = sig
   module CFG : ProcCfg.S
 
-  module Domain : AbstractDomain.S
   (** abstract domain whose state we propagate *)
+  module Domain : AbstractDomain.S
 
   (** read-only extra state (results of previous analyses, globals, etc.) *)
   type analysis_data
@@ -46,8 +46,7 @@ module type DisjunctiveConfig = sig
     [ `UnderApproximateAfter of int
       (** When the set of disjuncts gets bigger than [n] then just stop adding new states to it,
           drop any further states on the floor. This corresponds to an under-approximation/bounded
-          approach. *)
-    | `NeverJoin  (** keep accumulating states *) ]
+          approach. *) ]
 
   val widen_policy : [`UnderApproximateAfterNumIterations of int]
 end

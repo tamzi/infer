@@ -7,6 +7,8 @@
 
 open! IStd
 
+val is_component_or_section_builder : Typ.Name.t -> Tenv.t -> bool
+
 (** Access path + its parent procedure *)
 module LocalAccessPath : sig
   type t = private {access_path: AccessPath.t; parent: Procname.t} [@@deriving compare]
@@ -24,7 +26,7 @@ val suffixes : String.Set.t
 module MethodCallPrefix : sig
   type t = private {prefix: string; procname: Procname.t; location: Location.t}
 
-  val make : Procname.t -> Location.t -> t
+  val make_with_prefixes : Procname.t -> Location.t -> t list
 end
 
 module Mem : sig

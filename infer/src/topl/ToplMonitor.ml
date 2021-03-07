@@ -32,7 +32,9 @@ let formals_of_procname proc_name =
   let params = Procname.get_parameters proc_name in
   let new_arg_name =
     let n = ref (-1) in
-    fun () -> incr n ; ToplName.arg !n
+    fun () ->
+      incr n ;
+      ToplName.arg !n
   in
   let f t =
     let name = Mangled.from_string (new_arg_name ()) in
@@ -129,37 +131,62 @@ let pure_exp e : Exp.t * Sil.instr list =
   (e', loads)
 
 
-let gen_if (cond : Exp.t) (true_branch : node_generator) (false_branch : node_generator) :
+let gen_if (condition : Exp.t) (true_branch : node_generator) (false_branch : node_generator) :
     node_generator =
+ (* NOTE: in [condition]: biabduction dislikes pvars; pulse dislikes boolean connectives. The main
+    difficulty in the code below is to take care of these restrictions. *)
  fun create_node set_succs ->
-  let start_node = create_node (Procdesc.Node.Stmt_node Procdesc.Node.MethodBody) [] in
-  let exit_node = create_node (Procdesc.Node.Stmt_node Procdesc.Node.MethodBody) [] in
-  let {start_node= true_start_node; exit_node= true_exit_node} =
-    true_branch create_node set_succs
+  let atom_if atom_condition start : (*false*) Procdesc.Node.t * (*true*) Procdesc.Node.t =
+    (* PRE: [atom_condition] contains no pvars *)
+    let prune c b =
+      let node_type = Procdesc.Node.Prune_node (b, Ik_if, PruneNodeKind_MethodBody) in
+      let instr = Sil.Prune (c, sourcefile_location (), b, Ik_if) in
+      create_node node_type [instr]
+    in
+    let prune_false = prune (UnOp (LNot, atom_condition, None)) false in
+    let prune_true = prune atom_condition true in
+    set_succs start [prune_false; prune_true] ;
+    (prune_false, prune_true)
   in
+  let n_to_1 xs y = List.iter ~f:(fun x -> set_succs x [y]) xs in
+  let default_node_kind = Procdesc.Node.Stmt_node MethodBody in
+  let rec mk_if acc condition start =
+    (* [mk_if ([],[]) condition start] creates Prune nodes (coming after node [start]) and returns a
+       pair of node lists (fs, ts) where [fs] are nodes that should continue with the false-branch
+       and [ts] are nodes that should continue with the true-branch. *)
+    match (condition : Exp.t) with
+    | UnOp (LNot, c, _) ->
+        Tuple2.swap (mk_if (Tuple2.swap acc) c start)
+    | BinOp (LAnd, l, r) ->
+        let l_false, l_true = mk_if acc l start in
+        let r_start =
+          let join = create_node default_node_kind [] in
+          n_to_1 l_true join ;
+          join
+        in
+        mk_if (l_false, []) r r_start
+    | BinOp (LOr, l, r) ->
+        let neg x = Exp.UnOp (LNot, x, None) in
+        let condition = neg (BinOp (LAnd, neg l, neg r)) in
+        mk_if acc condition start
+    | _ ->
+        (* maybe in Core will have Tuple2.zip one day? *)
+        let lift f (l1, r1) (l2, r2) = (f l1 l2, f r1 r2) in
+        lift List.cons (atom_if condition start) acc
+  in
+  let condition, preamble = pure_exp condition in
+  let start_node = create_node default_node_kind preamble in
+  let exit_node = create_node default_node_kind [] in
+  let before_false, before_true = mk_if ([], []) condition start_node in
   let {start_node= false_start_node; exit_node= false_exit_node} =
     false_branch create_node set_succs
   in
-  (* NOTE: Symbolic execution works with non-pure prune expressions but it generates symbolic
-     states from which abstraction then removes too much information. *)
-  let cond, preamble = pure_exp cond in
-  let prune_true =
-    let node_type = Procdesc.Node.Prune_node (true, Sil.Ik_if, PruneNodeKind_MethodBody) in
-    let instr = Sil.Prune (cond, sourcefile_location (), true, Sil.Ik_if) in
-    create_node node_type (preamble @ [instr])
+  let {start_node= true_start_node; exit_node= true_exit_node} =
+    true_branch create_node set_succs
   in
-  let prune_false =
-    let node_type = Procdesc.Node.Prune_node (false, Sil.Ik_if, PruneNodeKind_MethodBody) in
-    let instr =
-      Sil.Prune (Exp.UnOp (Unop.LNot, cond, None), sourcefile_location (), false, Sil.Ik_if)
-    in
-    create_node node_type (preamble @ [instr])
-  in
-  set_succs start_node [prune_true; prune_false] ;
-  set_succs prune_true [true_start_node] ;
-  set_succs prune_false [false_start_node] ;
-  set_succs true_exit_node [exit_node] ;
-  set_succs false_exit_node [exit_node] ;
+  n_to_1 before_false false_start_node ;
+  n_to_1 before_true true_start_node ;
+  n_to_1 [false_exit_node; true_exit_node] exit_node ;
   {start_node; exit_node}
 
 
@@ -262,30 +289,16 @@ let generate_execute_state automaton proc_name =
       let exp_of_value =
         let open ToplAst in
         function
-        | Constant c ->
-            c
+        | Constant (LiteralInt x) ->
+            Exp.Const (Const.Cint (IntLit.of_int x))
         | Register i ->
             ToplUtils.static_var (ToplName.reg i)
         | Binding v ->
             ToplUtils.static_var (binding_of v)
       in
-      let expbinop = function
-        | ToplAst.OpEq ->
-            Binop.Eq
-        | ToplAst.OpNe ->
-            Binop.Ne
-        | ToplAst.OpGe ->
-            Binop.Ge
-        | ToplAst.OpGt ->
-            Binop.Gt
-        | ToplAst.OpLe ->
-            Binop.Le
-        | ToplAst.OpLt ->
-            Binop.Lt
-      in
       let predicate = function
         | ToplAst.Binop (op, v1, v2) ->
-            Exp.BinOp (expbinop op, exp_of_value v1, exp_of_value v2)
+            Exp.BinOp (ToplUtils.binop_to op, exp_of_value v1, exp_of_value v2)
         | ToplAst.Value v ->
             exp_of_value v
       in
@@ -343,7 +356,8 @@ let generate_execute_state automaton proc_name =
   procedure proc_name body
 
 
-(** INV: For the code generated here, biabduction infers the spec "returned value can be anything" *)
+(** INV: For the code generated here, the underlying analysis infers the spec "returned value can be
+    anything" *)
 let generate_maybe _automaton proc_name = procedure proc_name (sequence [])
 
 let name_matches re proc_name = Str.string_match re (Procname.get_method proc_name) 0

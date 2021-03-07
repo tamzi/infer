@@ -11,7 +11,7 @@ module F = Format
 exception ParseError of string
 
 (* internally it uses reversed list to store qualified name, for example: ["get", "shared_ptr<int>", "std"]*)
-type t = string list [@@deriving compare]
+type t = string list [@@deriving compare, yojson_of]
 
 let empty = []
 
@@ -34,6 +34,14 @@ let append_template_args_to_last quals ~args =
               last (String.concat ~sep:", " quals)))
   | last :: rest ->
       (last ^ args) :: rest
+  | [] ->
+      raise (ParseError "expected non-empty qualified name")
+
+
+let append_protocols quals ~protocols =
+  match quals with
+  | last :: rest ->
+      (last ^ protocols) :: rest
   | [] ->
       raise (ParseError "expected non-empty qualified name")
 
@@ -110,3 +118,9 @@ module Match = struct
     let normalized_qualifiers = strip_template_args quals in
     Str.string_match matcher (to_separated_string ~sep:matching_separator normalized_qualifiers) 0
 end
+
+module Set = PrettyPrintable.MakePPSet (struct
+  type nonrec t = t [@@deriving compare]
+
+  let pp = pp
+end)

@@ -29,6 +29,8 @@ module UserFriendlyNullable = struct
     | Nullability.LocallyTrustedNonnull ->
         (* The value is trusted in the current mode by definition, hence is not treated as nullable. *)
         None
+    | Nullability.ProvisionallyNullable ->
+        (* from the user-facing point of view, this is a non-null *) None
     | Nullability.StrictNonnull ->
         None
 end
@@ -62,17 +64,18 @@ let is_object_nullability_self_explanatory ~object_expression (object_origin : T
          the user can quickly go to field_name definition and see if its annotation. *)
       let field_name_str = Fieldname.get_field_name field_name in
       String.is_suffix object_expression ~suffix:field_name_str
-  | MethodCall {pname; annotated_signature= {model_source}} ->
-      let is_modelled = Option.is_some model_source in
-      if is_modelled then (* This is non-trivial and should always be explained to the user *)
-        false
-      else
+  | MethodCall {pname; annotated_signature= {kind}} -> (
+    match kind with
+    | FirstParty | ThirdParty Unregistered ->
         (* Either local variable or expression like <smth>.method_name(...).
            Latter case is self-explanatory: it is easy to the user to jump to definition
            and check out the method annotation.
         *)
-        let method_name = Procname.to_simplified_string pname in
+        let method_name = Procname.Java.to_simplified_string pname in
         String.is_suffix object_expression ~suffix:method_name
+    | ThirdParty ModelledInternally | ThirdParty (InThirdPartyRepo _) ->
+        (* This is non-trivial and should always be explained to the user *)
+        false )
   (* These cases are not yet supported because they normally mean non-nullable case, for which
      we don't render important messages yet.
   *)
@@ -90,18 +93,12 @@ let is_object_nullability_self_explanatory ~object_expression (object_origin : T
 type message_info =
   { offending_object: string
   ; object_loc: Location.t
-  ; coming_from_explanation: string
+  ; why_dont_trust_explanation: string
+        (** A short message describing why don't we trust the value to be not null *)
   ; what_is_used: string
   ; recommendation: string
+  ; third_party_dependent_methods: (Procname.Java.t * AnnotatedSignature.t) list
   ; issue_type: IssueType.t }
-
-let get_method_class_name procname =
-  match procname with
-  | Procname.Java java_pname ->
-      Some (Procname.Java.get_simple_class_name java_pname)
-  | _ ->
-      None
-
 
 let get_field_class_name field_name =
   let class_with_field = Fieldname.to_simplified_string field_name in
@@ -109,21 +106,25 @@ let get_field_class_name field_name =
   |> Option.value_map ~f:(fun (classname, _) -> classname) ~default:"the field class"
 
 
-let mk_coming_from_unchecked_or_locally_checked_case_only nullsafe_mode untrusted_kind =
-  match (nullsafe_mode, untrusted_kind) with
-  | NullsafeMode.Strict, UserFriendlyNullable.UncheckedNonnull ->
-      "non-strict classes"
-  | NullsafeMode.Strict, UserFriendlyNullable.LocallyCheckedNonnull ->
-      "nullsafe-local classes"
-  | NullsafeMode.Local _, _ ->
-      "non-nullsafe classes"
-  | NullsafeMode.Default, _ ->
-      Logging.die InternalError
-        "mk_coming_from_unchecked_or_locally_checked_case_only:: not applicable to default mode"
-  | _, UserFriendlyNullable.ThirdPartyNonnull ->
-      Logging.die InternalError
-        "mk_coming_from_unchecked_or_locally_checked_case_only:: not applicable to \
-         ThirdPartyNonnull case"
+let why_dont_trust_explanation_first_party nullsafe_mode =
+  match nullsafe_mode with
+  | NullsafeMode.Strict ->
+      "`@Nullsafe(STRICT)` prohibits using values coming from non-strict classes without a check"
+  | NullsafeMode.Local (NullsafeMode.Trust.Only _) ->
+      "`@Nullsafe(trust={...})` prohibits using values coming from non-`@Nullsafe` classes without \
+       a check, unless the class is in the trust list"
+  | _ ->
+      Logging.die InternalError "why_dont_trust_explanation_first_party:: not applicable to %a"
+        NullsafeMode.pp nullsafe_mode
+
+
+let why_dont_trust_explanation_third_party nullsafe_mode ~is_field =
+  let mode_str =
+    match nullsafe_mode with NullsafeMode.Default -> "Nullsafe" | _ -> "`@Nullsafe` mode"
+  in
+  F.sprintf "%s prohibits using values coming from not vetted third party %s without a check"
+    mode_str
+    (if is_field then "fields" else "methods")
 
 
 let mk_strictification_advice_unchecked_or_locally_checked_case_only nullsafe_mode untrusted_kind
@@ -149,24 +150,20 @@ let mk_recommendation_for_third_party_field nullsafe_mode field =
   match nullsafe_mode with
   | NullsafeMode.Strict ->
       F.sprintf "access %s via a nullsafe strict getter" field
-  | NullsafeMode.Local _ ->
+  | NullsafeMode.Local _ | NullsafeMode.Default ->
       F.sprintf "access %s via a nullsafe getter" field
-  | NullsafeMode.Default ->
-      Logging.die InternalError
-        "mk_recommendation_for_third_party_field:: Should not happen: we should tolerate third \
-         party in default mode"
 
 
 let get_info object_origin nullsafe_mode untrusted_kind =
   match object_origin with
-  | TypeOrigin.MethodCall {pname; call_loc} ->
+  | TypeOrigin.MethodCall {pname; call_loc; annotated_signature} ->
       let offending_object =
         F.asprintf "%a" MarkupFormatter.pp_monospaced
-          (Procname.to_simplified_string ~withclass:true pname)
+          (Procname.Java.to_simplified_string ~withclass:true pname)
       in
       let object_loc = call_loc in
       let what_is_used = "Result of this call" in
-      let coming_from_explanation, recommendation, issue_type =
+      let why_dont_trust_explanation, recommendation, issue_type, third_party_dependent_methods =
         match untrusted_kind with
         | UserFriendlyNullable.ThirdPartyNonnull ->
             let suggested_third_party_sig_file =
@@ -182,27 +179,28 @@ let get_info object_origin nullsafe_mode untrusted_kind =
                   (* this can happen when third party is registered in a deprecated way (not in third party repository) *)
                 ~default:"the third party signature storage"
             in
-            ( "not vetted third party methods"
-            , F.sprintf "add the correct signature to %s" where_to_add_signature
-            , IssueType.eradicate_unvetted_third_party_in_nullsafe )
-        | UserFriendlyNullable.UncheckedNonnull | UserFriendlyNullable.LocallyCheckedNonnull ->
-            let from =
-              mk_coming_from_unchecked_or_locally_checked_case_only nullsafe_mode untrusted_kind
+            let why_dont_trust_explanation =
+              why_dont_trust_explanation_third_party nullsafe_mode ~is_field:false
             in
+            ( why_dont_trust_explanation
+            , F.sprintf "add the correct signature to %s" where_to_add_signature
+            , IssueType.eradicate_unvetted_third_party_in_nullsafe
+            , [(pname, annotated_signature)] )
+        | UserFriendlyNullable.UncheckedNonnull | UserFriendlyNullable.LocallyCheckedNonnull ->
+            let why_dont_trust_explanation = why_dont_trust_explanation_first_party nullsafe_mode in
             let recommendation =
-              let what_to_strictify =
-                Option.value (get_method_class_name pname) ~default:offending_object
-              in
+              let what_to_strictify = Procname.Java.get_simple_class_name pname in
               mk_strictification_advice_unchecked_or_locally_checked_case_only nullsafe_mode
                 untrusted_kind ~what_to_strictify
             in
             let issue_type = IssueType.eradicate_unchecked_usage_in_nullsafe in
-            (from, recommendation, issue_type)
+            (why_dont_trust_explanation, recommendation, issue_type, [])
       in
       { offending_object
       ; object_loc
-      ; coming_from_explanation
+      ; why_dont_trust_explanation
       ; what_is_used
+      ; third_party_dependent_methods
       ; recommendation
       ; issue_type }
   | TypeOrigin.Field {field_name; access_loc} ->
@@ -216,27 +214,28 @@ let get_info object_origin nullsafe_mode untrusted_kind =
       (* TODO: currently we do not support third-party annotations for fields. Because of this,
          render error like it is a non-stict class. *)
       let what_is_used = "This field" in
-      let coming_from_explanation, recommendation, issue_type =
+      let why_dont_trust_explanation, recommendation, issue_type =
         match untrusted_kind with
         | UserFriendlyNullable.ThirdPartyNonnull ->
-            ( "third-party classes"
+            ( why_dont_trust_explanation_third_party nullsafe_mode ~is_field:true
             , mk_recommendation_for_third_party_field nullsafe_mode unqualified_name
             , IssueType.eradicate_unvetted_third_party_in_nullsafe )
         | UserFriendlyNullable.UncheckedNonnull | UserFriendlyNullable.LocallyCheckedNonnull ->
-            let from =
-              mk_coming_from_unchecked_or_locally_checked_case_only nullsafe_mode untrusted_kind
-            in
+            let why_dont_trust_explanation = why_dont_trust_explanation_first_party nullsafe_mode in
             let recommendation =
               mk_strictification_advice_unchecked_or_locally_checked_case_only nullsafe_mode
                 untrusted_kind ~what_to_strictify:(get_field_class_name field_name)
             in
-            (from, recommendation, IssueType.eradicate_unchecked_usage_in_nullsafe)
+            ( why_dont_trust_explanation
+            , recommendation
+            , IssueType.eradicate_unchecked_usage_in_nullsafe )
       in
       { offending_object= qualified_name
       ; object_loc
-      ; coming_from_explanation
+      ; why_dont_trust_explanation
       ; what_is_used
       ; recommendation
+      ; third_party_dependent_methods= []
       ; issue_type }
   | other ->
       Logging.die InternalError
@@ -249,30 +248,33 @@ let mk_nullsafe_issue_for_untrusted_values ~nullsafe_mode ~untrusted_kind ~bad_u
     object_origin =
   let { offending_object
       ; object_loc
-      ; coming_from_explanation
+      ; why_dont_trust_explanation
       ; what_is_used
       ; recommendation
+      ; third_party_dependent_methods
       ; issue_type } =
     get_info object_origin nullsafe_mode untrusted_kind
   in
   let description =
     F.asprintf
-      "%s: `@Nullsafe%a` mode prohibits using values coming from %s without a check. %s is used at \
-       line %d. Either add a local check for null or assertion, or %s."
-      offending_object NullsafeMode.pp nullsafe_mode coming_from_explanation what_is_used
-      bad_usage_location.Location.line recommendation
+      "%s: %s. %s is used at line %d. Either add a local check for null or assertion, or %s."
+      offending_object why_dont_trust_explanation what_is_used bad_usage_location.Location.line
+      recommendation
   in
-  (description, issue_type, object_loc)
+  NullsafeIssue.make ~description ~issue_type ~loc:object_loc
+    ~severity:(NullsafeMode.severity nullsafe_mode)
+    ~field_name:None
+  |> NullsafeIssue.with_third_party_dependent_methods third_party_dependent_methods
 
 
 let find_alternative_nonnull_method_description nullable_origin =
   let open IOption.Let_syntax in
   match nullable_origin with
-  | TypeOrigin.MethodCall {pname= Procname.Java java_pname as pname} ->
+  | TypeOrigin.MethodCall {pname} ->
       let* ModelTables.{package_name; class_name; method_name} =
         Models.find_nonnullable_alternative pname
       in
-      let+ original_package_name = Procname.Java.get_package java_pname in
+      let+ original_package_name = Procname.Java.get_package pname in
       if String.equal original_package_name package_name then
         (* The same package that is from origin - omit name for simplicity *)
         class_name ^ "." ^ method_name ^ "()"

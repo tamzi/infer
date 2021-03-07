@@ -11,10 +11,17 @@
 extern "C" {
 #endif
 
+/* allocation that cannot fail */
+void* __llair_alloc(unsigned size);
+
+/* non-deterministic choice */
+int __llair_choice();
+
+/* throw an exception */
 __attribute__((noreturn)) void __llair_throw(void* thrown_exception);
 
-/* This models allocation that cannot fail. */
-void* __llair_alloc(unsigned size);
+/* executions that call __llair_unreachable are assumed to be impossible */
+__attribute__((noreturn)) void __llair_unreachable();
 
 #ifdef __cplusplus
 }

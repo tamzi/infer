@@ -15,34 +15,117 @@ type detail_level = Verbose | Non_verbose | Simple
 
 let is_verbose v = match v with Verbose -> true | _ -> false
 
+module CSharp = struct
+  type kind = Non_Static | Static [@@deriving compare, equal, yojson_of]
+
+  type t =
+    { method_name: string
+    ; parameters: Typ.t list
+    ; class_name: Typ.Name.t
+    ; return_type: Typ.t option (* option because constructors have no return type *)
+    ; kind: kind }
+  [@@deriving compare, equal, yojson_of]
+
+  let ensure_csharp_type t =
+    if not (Typ.is_csharp_type t) then
+      L.die InternalError "Expected csharp type but got %a@." (Typ.pp_full Pp.text) t
+
+
+  let make ~class_name ~return_type ~method_name ~parameters ~kind () =
+    Option.iter return_type ~f:ensure_csharp_type ;
+    {class_name; return_type; method_name; parameters; kind}
+
+
+  let pp_return_type ~verbose fmt j = Option.iter j.return_type ~f:(Typ.pp_cs ~verbose fmt)
+
+  let constructor_method_name = ".ctor"
+
+  let get_class_name cs = Typ.Name.name cs.class_name
+
+  let get_class_type_name cs = cs.class_name
+
+  let get_csharp_class_name_exn cs =
+    match cs.class_name with
+    | Typ.CSharpClass csharp_class_name ->
+        csharp_class_name
+    | _ ->
+        L.die InternalError "Asked for csharp class name but got something else"
+
+
+  let get_simple_class_name cs = CSharpClassName.classname (get_csharp_class_name_exn cs)
+
+  let get_method cs = cs.method_name
+
+  let get_return_typ pname_csharp = Option.value ~default:StdTyp.void pname_csharp.return_type
+
+  let replace_parameters parameters cs = {cs with parameters}
+
+  let get_parameters cs = cs.parameters
+
+  let is_generated {method_name} = String.is_prefix ~prefix:"$" method_name
+
+  (** Prints a string of a csharp procname with the given level of verbosity *)
+  let pp ?(withclass = false) verbosity fmt cs =
+    let verbose = is_verbose verbosity in
+    let pp_class_name_dot fmt cs =
+      CSharpClassName.pp_with_verbosity ~verbose fmt (get_csharp_class_name_exn cs) ;
+      F.pp_print_char fmt '.'
+    in
+    let pp_package_method_and_params fmt cs =
+      let pp_param_list fmt params = Pp.seq ~sep:"," (Typ.pp_cs ~verbose) fmt params in
+      F.fprintf fmt "%a%s(%a)" pp_class_name_dot cs cs.method_name pp_param_list cs.parameters
+    in
+    match verbosity with
+    | Verbose ->
+        (* [package.class.method(params): rtype], used for example to create unique filenames *)
+        let separator = if Option.is_none cs.return_type then "" else ":" in
+        pp_package_method_and_params fmt cs ;
+        F.fprintf fmt "%s%a" separator (pp_return_type ~verbose) cs
+    | Non_verbose ->
+        (* [rtype package.class.method(params)], for creating reports *)
+        let separator = if Option.is_none cs.return_type then "" else " " in
+        F.fprintf fmt "%a%s" (pp_return_type ~verbose) cs separator ;
+        pp_package_method_and_params fmt cs
+    | Simple ->
+        (* [methodname(...)] or without ... if there are no parameters *)
+        let params = match cs.parameters with [] -> "" | _ -> "..." in
+        let pp_method_name fmt cs =
+          if String.equal cs.method_name constructor_method_name then
+            F.pp_print_string fmt (get_simple_class_name cs)
+          else (
+            if withclass then pp_class_name_dot fmt cs ;
+            F.pp_print_string fmt cs.method_name )
+        in
+        F.fprintf fmt "%a(%s)" pp_method_name cs params
+end
+
 module Java = struct
   type kind =
     | Non_Static
         (** in Java, procedures called with invokevirtual, invokespecial, and invokeinterface *)
     | Static  (** in Java, procedures called with invokestatic *)
-  [@@deriving compare]
-
-  (* TODO: use Mangled.t here *)
-  type java_type = JavaSplitName.t [@@deriving compare, equal]
-
-  let java_void = JavaSplitName.void
+  [@@deriving compare, equal, yojson_of]
 
   (** Type of java procedure names. *)
   type t =
     { method_name: string
-    ; parameters: java_type list
+    ; parameters: Typ.t list
     ; class_name: Typ.Name.t
-    ; return_type: java_type option (* option because constructors have no return type *)
+    ; return_type: Typ.t option (* option because constructors have no return type *)
     ; kind: kind }
-  [@@deriving compare]
+  [@@deriving compare, equal, yojson_of]
+
+  let ensure_java_type t =
+    if not (Typ.is_java_type t) then
+      L.die InternalError "Expected java type but got %a@." (Typ.pp_full Pp.text) t
+
 
   let make ~class_name ~return_type ~method_name ~parameters ~kind () =
+    Option.iter return_type ~f:ensure_java_type ;
     {class_name; return_type; method_name; parameters; kind}
 
 
-  let pp_return_type ~verbose fmt j =
-    Option.iter j.return_type ~f:(JavaSplitName.pp_type_verbosity ~verbose fmt)
-
+  let pp_return_type ~verbose fmt j = Option.iter j.return_type ~f:(Typ.pp_java ~verbose fmt)
 
   let constructor_method_name = "<init>"
 
@@ -82,9 +165,7 @@ module Java = struct
       F.pp_print_char fmt '.'
     in
     let pp_package_method_and_params fmt j =
-      let pp_param_list fmt params =
-        Pp.seq ~sep:"," (JavaSplitName.pp_type_verbosity ~verbose) fmt params
-      in
+      let pp_param_list fmt params = Pp.seq ~sep:"," (Typ.pp_java ~verbose) fmt params in
       F.fprintf fmt "%a%s(%a)" pp_class_name_dot j j.method_name pp_param_list j.parameters
     in
     match verbosity with
@@ -111,34 +192,9 @@ module Java = struct
         F.fprintf fmt "%a(%s)" pp_method_name j params
 
 
-  let get_return_typ pname_java =
-    let rec java_from_string = function
-      | "" | "void" ->
-          Typ.void
-      | "int" ->
-          Typ.int
-      | "byte" ->
-          Typ.java_byte
-      | "short" ->
-          Typ.java_short
-      | "boolean" ->
-          Typ.boolean
-      | "char" ->
-          Typ.java_char
-      | "long" ->
-          Typ.long
-      | "float" ->
-          Typ.float
-      | "double" ->
-          Typ.double
-      | typ_str when String.contains typ_str '[' ->
-          let stripped_typ = String.sub typ_str ~pos:0 ~len:(String.length typ_str - 2) in
-          Typ.(mk_ptr (mk_array (java_from_string stripped_typ)))
-      | typ_str ->
-          Typ.(mk_ptr (mk_struct (Typ.Name.Java.from_string typ_str)))
-    in
-    java_from_string (F.asprintf "%a" (pp_return_type ~verbose:true) pname_java)
+  let to_simplified_string ?(withclass = false) = Pp.string_of_pp (pp ~withclass Simple)
 
+  let get_return_typ pname_java = Option.value ~default:StdTyp.void pname_java.return_type
 
   let is_close {method_name} = String.equal method_name "close"
 
@@ -148,7 +204,7 @@ module Java = struct
     { method_name= class_initializer_method_name
     ; parameters= []
     ; class_name
-    ; return_type= Some java_void
+    ; return_type= Some StdTyp.void
     ; kind= Static }
 
 
@@ -182,29 +238,55 @@ module Java = struct
         false
 
 
-  let is_autogen_method_name method_name = String.contains method_name '$'
-
-  let is_autogen_method {method_name} = is_autogen_method_name method_name
+  let is_autogen_method {method_name} = JConfig.is_synthetic_name method_name
 
   (** Check if the proc name has the type of a java vararg. Note: currently only checks that the
       last argument has type Object[]. *)
   let is_vararg {parameters} =
-    List.last parameters |> Option.exists ~f:JavaSplitName.(equal java_lang_object_array)
+    match List.last parameters with
+    | Some {desc= Tptr ({desc= Tarray {elt}}, Pk_pointer)} ->
+        Typ.equal StdTyp.Java.pointer_to_java_lang_object elt
+    | _ ->
+        false
 
 
   let is_external java_pname =
     let package = get_package java_pname in
     Option.exists ~f:Config.java_package_is_external package
+
+
+  module Normalizer = HashNormalizer.Make (struct
+    type nonrec t = t [@@deriving equal]
+
+    let hash = Hashtbl.hash
+
+    let normalize t =
+      let method_name = HashNormalizer.StringNormalizer.normalize t.method_name in
+      let parameters =
+        IList.map_changed t.parameters ~equal:phys_equal ~f:Typ.Normalizer.normalize
+      in
+      let class_name = Typ.Name.Normalizer.normalize t.class_name in
+      let return_type =
+        IOption.map_changed t.return_type ~equal:phys_equal ~f:Typ.Normalizer.normalize
+      in
+      if
+        phys_equal method_name t.method_name
+        && phys_equal parameters t.parameters
+        && phys_equal class_name t.class_name
+        && phys_equal return_type t.return_type
+      then t
+      else {method_name; parameters; class_name; return_type; kind= t.kind}
+  end)
 end
 
 module Parameter = struct
   (** Type for parameters in clang procnames, [Some name] means the parameter is of type pointer to
       struct, with [name] being the name of the struct, [None] means the parameter is of some other
       type. *)
-  type clang_parameter = Typ.Name.t option [@@deriving compare, equal]
+  type clang_parameter = Typ.Name.t option [@@deriving compare, equal, yojson_of]
 
   (** Type for parameters in procnames, for java and clang. *)
-  type t = JavaParameter of Java.java_type | ClangParameter of clang_parameter
+  type t = JavaParameter of Typ.t | ClangParameter of clang_parameter | CSharpParameter of Typ.t
   [@@deriving compare, equal]
 
   let of_typ typ =
@@ -243,7 +325,7 @@ module ObjC_Cpp = struct
     | ObjCClassMethod
     | ObjCInstanceMethod
     | ObjCInternalMethod
-  [@@deriving compare]
+  [@@deriving compare, yojson_of]
 
   type t =
     { class_name: Typ.Name.t
@@ -251,10 +333,18 @@ module ObjC_Cpp = struct
     ; method_name: string
     ; parameters: Parameter.clang_parameter list
     ; template_args: Typ.template_spec_info }
-  [@@deriving compare]
+  [@@deriving compare, yojson_of]
 
   let make class_name method_name kind template_args parameters =
     {class_name; method_name; kind; template_args; parameters}
+
+
+  let make_dealloc name = make name "dealloc" ObjCInstanceMethod Typ.NoTemplate []
+
+  let make_copyWithZone ~is_mutable name =
+    let zone = Typ.CStruct (QualifiedCppName.of_qual_string "_NSZone") in
+    let method_name = if is_mutable then "mutableCopyWithZone:" else "copyWithZone:" in
+    make name method_name ObjCInstanceMethod Typ.NoTemplate [Parameter.clang_param_of_name zone]
 
 
   let get_class_name objc_cpp = Typ.Name.name objc_cpp.class_name
@@ -313,13 +403,14 @@ module ObjC_Cpp = struct
 
 
   let pp verbosity fmt osig =
+    let sep = if is_objc_method osig then "." else "::" in
     match verbosity with
     | Simple ->
         F.pp_print_string fmt osig.method_name
     | Non_verbose ->
-        F.fprintf fmt "%s::%s" (Typ.Name.name osig.class_name) osig.method_name
+        F.fprintf fmt "%s%s%s" (Typ.Name.name osig.class_name) sep osig.method_name
     | Verbose ->
-        F.fprintf fmt "%s::%s%a%a" (Typ.Name.name osig.class_name) osig.method_name
+        F.fprintf fmt "%s%s%s%a%a" (Typ.Name.name osig.class_name) sep osig.method_name
           Parameter.pp_parameters osig.parameters pp_verbose_kind osig.kind
 
 
@@ -335,7 +426,7 @@ module C = struct
     ; mangled: string option
     ; parameters: Parameter.clang_parameter list
     ; template_args: Typ.template_spec_info }
-  [@@deriving compare]
+  [@@deriving compare, yojson_of]
 
   let c name mangled parameters template_args =
     {name; mangled= Some mangled; parameters; template_args}
@@ -375,9 +466,10 @@ end
 
 module Block = struct
   (** Type of Objective C block names. *)
-  type block_name = string [@@deriving compare]
+  type block_name = string [@@deriving compare, yojson_of]
 
-  type t = {name: block_name; parameters: Parameter.clang_parameter list} [@@deriving compare]
+  type t = {name: block_name; parameters: Parameter.clang_parameter list}
+  [@@deriving compare, yojson_of]
 
   let make name parameters = {name; parameters}
 
@@ -398,13 +490,14 @@ end
 
 (** Type of procedure names. *)
 type t =
+  | CSharp of CSharp.t
   | Java of Java.t
   | C of C.t
   | Linters_dummy_method
   | Block of Block.t
   | ObjC_Cpp of ObjC_Cpp.t
-  | WithBlockParameters of t * Block.block_name list
-[@@deriving compare]
+  | WithBlockParameters of t * Block.t list
+[@@deriving compare, yojson_of]
 
 let equal = [%compare.equal: t]
 
@@ -415,12 +508,18 @@ let with_block_parameters base blocks = WithBlockParameters (base, blocks)
 
 let is_java = function Java _ -> true | _ -> false
 
+let is_csharp = function CSharp _ -> true | _ -> false
+
+let as_java_exn ~explanation t =
+  match t with
+  | Java java ->
+      java
+  | _ ->
+      Logging.die InternalError "Expected Java procname: %s" explanation
+
+
 (* TODO: deprecate this unfortunately named function and use is_clang instead *)
 let is_c_method = function ObjC_Cpp _ -> true | _ -> false
-
-let is_c_function = function C _ -> true | _ -> false
-
-let is_clang = function ObjC_Cpp name -> ObjC_Cpp.is_objc_method name | name -> is_c_function name
 
 let is_java_lift f = function Java java_pname -> f java_pname | _ -> false
 
@@ -436,10 +535,16 @@ let is_objc_method procname =
   match procname with ObjC_Cpp name -> ObjC_Cpp.is_objc_method name | _ -> false
 
 
-let block_name_of_procname procname =
+let is_objc_dealloc procname =
+  is_objc_method procname
+  &&
+  match procname with ObjC_Cpp {method_name} -> ObjC_Cpp.is_objc_dealloc method_name | _ -> false
+
+
+let block_of_procname procname =
   match procname with
   | Block block ->
-      block.name
+      block
   | _ ->
       Logging.die InternalError "Only to be called with Objective-C block names"
 
@@ -452,6 +557,8 @@ let rec replace_class t (new_class : Typ.Name.t) =
   match t with
   | Java j ->
       Java {j with class_name= new_class}
+  | CSharp cs ->
+      CSharp {cs with class_name= new_class}
   | ObjC_Cpp osig ->
       ObjC_Cpp {osig with class_name= new_class}
   | WithBlockParameters (base, blocks) ->
@@ -463,6 +570,8 @@ let rec replace_class t (new_class : Typ.Name.t) =
 let get_class_type_name = function
   | Java java_pname ->
       Some (Java.get_class_type_name java_pname)
+  | CSharp cs_pname ->
+      Some (CSharp.get_class_type_name cs_pname)
   | ObjC_Cpp objc_pname ->
       Some (ObjC_Cpp.get_class_type_name objc_pname)
   | _ ->
@@ -472,6 +581,8 @@ let get_class_type_name = function
 let get_class_name = function
   | Java java_pname ->
       Some (Java.get_class_name java_pname)
+  | CSharp cs_pname ->
+      Some (CSharp.get_class_name cs_pname)
   | ObjC_Cpp objc_pname ->
       Some (ObjC_Cpp.get_class_name objc_pname)
   | _ ->
@@ -488,7 +599,7 @@ let rec objc_cpp_replace_method_name t (new_method_name : string) =
       ObjC_Cpp {osig with method_name= new_method_name}
   | WithBlockParameters (base, blocks) ->
       WithBlockParameters (objc_cpp_replace_method_name base new_method_name, blocks)
-  | C _ | Block _ | Linters_dummy_method | Java _ ->
+  | C _ | Block _ | Linters_dummy_method | Java _ | CSharp _ ->
       t
 
 
@@ -504,6 +615,8 @@ let rec get_method = function
       name
   | Java j ->
       j.method_name
+  | CSharp cs ->
+      cs.method_name
   | Linters_dummy_method ->
       "Linters_dummy_method"
 
@@ -525,10 +638,14 @@ let get_language = function
       Language.Clang
   | Java _ ->
       Language.Java
+  | CSharp _ ->
+      Language.CIL
 
 
 (** [is_constructor pname] returns true if [pname] is a constructor *)
 let is_constructor = function
+  | CSharp c ->
+      String.equal c.method_name CSharp.constructor_method_name
   | Java js ->
       String.equal js.method_name Java.constructor_method_name
   | ObjC_Cpp {kind= CPPConstructor _} ->
@@ -561,10 +678,19 @@ let get_global_name_of_initializer = function
       None
 
 
+let pp_with_block_parameters verbose pp fmt base blocks =
+  pp fmt base ;
+  F.pp_print_string fmt "[" ;
+  Pp.seq ~sep:"^" (Block.pp verbose) fmt blocks ;
+  F.pp_print_string fmt "]"
+
+
 (** Very verbose representation of an existing Procname.t *)
 let rec pp_unique_id fmt = function
   | Java j ->
       Java.pp Verbose fmt j
+  | CSharp cs ->
+      CSharp.pp Verbose fmt cs
   | C osig ->
       C.pp Verbose fmt osig
   | ObjC_Cpp osig ->
@@ -574,9 +700,7 @@ let rec pp_unique_id fmt = function
   | WithBlockParameters (base, []) ->
       pp_unique_id fmt base
   | WithBlockParameters (base, (_ :: _ as blocks)) ->
-      pp_unique_id fmt base ;
-      F.pp_print_string fmt "_" ;
-      Pp.seq ~sep:"_" F.pp_print_string fmt blocks
+      pp_with_block_parameters Verbose pp_unique_id fmt base blocks
   | Linters_dummy_method ->
       F.pp_print_string fmt "Linters_dummy_method"
 
@@ -587,6 +711,8 @@ let to_unique_id proc_name = F.asprintf "%a" pp_unique_id proc_name
 let rec pp fmt = function
   | Java j ->
       Java.pp Non_verbose fmt j
+  | CSharp cs ->
+      CSharp.pp Non_verbose fmt cs
   | C osig ->
       C.pp Non_verbose fmt osig
   | ObjC_Cpp osig ->
@@ -596,9 +722,7 @@ let rec pp fmt = function
   | WithBlockParameters (base, []) ->
       pp fmt base
   | WithBlockParameters (base, (_ :: _ as blocks)) ->
-      pp fmt base ;
-      F.pp_print_string fmt "_" ;
-      Pp.seq ~sep:"_" F.pp_print_string fmt blocks
+      pp_with_block_parameters Non_verbose pp fmt base blocks
   | Linters_dummy_method ->
       pp_unique_id fmt Linters_dummy_method
 
@@ -609,6 +733,8 @@ let to_string proc_name = F.asprintf "%a" pp proc_name
 let rec pp_simplified_string ?(withclass = false) fmt = function
   | Java j ->
       Java.pp ~withclass Simple fmt j
+  | CSharp cs ->
+      CSharp.pp ~withclass Simple fmt cs
   | C osig ->
       C.pp Simple fmt osig
   | ObjC_Cpp osig ->
@@ -629,6 +755,8 @@ let from_string_c_fun func = C (C.from_string func)
 
 let java_inner_class_prefix_regex = Str.regexp "\\$[0-9]+"
 
+let csharp_inner_class_prefix_regex = Str.regexp "\\$[0-9]+"
+
 let hashable_name proc_name =
   match proc_name with
   | Java pname -> (
@@ -640,12 +768,22 @@ let hashable_name proc_name =
           Str.global_replace java_inner_class_prefix_regex "$_" name
       | exception Caml.Not_found ->
           name )
-  | ObjC_Cpp m when ObjC_Cpp.is_objc_method m ->
+  | CSharp pname -> (
+      let name = F.asprintf "%a" (CSharp.pp ~withclass:true Simple) pname in
+      match Str.search_forward csharp_inner_class_prefix_regex name 0 with
+      | _ ->
+          Str.global_replace csharp_inner_class_prefix_regex "$_" name
+      | exception Caml.Not_found ->
+          name )
+  | ObjC_Cpp osig when ObjC_Cpp.is_objc_method osig ->
       (* In Objective C, the list of parameters is part of the method name. To prevent the bug
          hash to change when a parameter is introduced or removed, only the part of the name
          before the first colon is used for the bug hash *)
       let name = F.asprintf "%a" (pp_simplified_string ~withclass:true) proc_name in
-      List.hd_exn (String.split_on_chars name ~on:[':'])
+      List.hd_exn (String.split name ~on:':')
+  | Block bsig ->
+      let name = F.asprintf "%a" (Block.pp Non_verbose) bsig in
+      List.hd_exn (String.split name ~on:':')
   | _ ->
       (* Other cases for C and C++ method names *)
       F.asprintf "%a" (pp_simplified_string ~withclass:true) proc_name
@@ -658,6 +796,8 @@ let rec get_parameters procname =
   match procname with
   | Java j ->
       List.map ~f:(fun par -> Parameter.JavaParameter par) (Java.get_parameters j)
+  | CSharp cs ->
+      List.map ~f:(fun par -> Parameter.CSharpParameter par) (CSharp.get_parameters cs)
   | C osig ->
       clang_param_to_param (C.get_parameters osig)
   | ObjC_Cpp osig ->
@@ -693,9 +833,24 @@ let rec replace_parameters new_parameters procname =
               "Expected Clang parameters in Clang procname, but got Java parameters" params )
       params
   in
+  let params_to_csharp_params params =
+    List.map
+      ~f:(fun param ->
+        match param with
+        | Parameter.CSharpParameter par ->
+            par
+        | _ ->
+            Logging.(die InternalError)
+              "Expected CSharp parameters in CSharp procname, but got parameters of another \
+               language"
+              params )
+      params
+  in
   match procname with
   | Java j ->
       Java (Java.replace_parameters (params_to_java_params new_parameters) j)
+  | CSharp cs ->
+      CSharp (CSharp.replace_parameters (params_to_csharp_params new_parameters) cs)
   | C osig ->
       C (C.replace_parameters (params_to_clang_params new_parameters) osig)
   | ObjC_Cpp osig ->
@@ -711,7 +866,9 @@ let rec replace_parameters new_parameters procname =
 let parameter_of_name procname class_name =
   match procname with
   | Java _ ->
-      Parameter.JavaParameter (JavaSplitName.of_string (Typ.Name.name class_name))
+      Parameter.JavaParameter Typ.(mk_ptr (mk_struct class_name))
+  | CSharp _ ->
+      Parameter.CSharpParameter Typ.(mk_ptr (mk_struct class_name))
   | _ ->
       Parameter.ClangParameter (Parameter.clang_param_of_name class_name)
 
@@ -729,12 +886,16 @@ let make_java ~class_name ~return_type ~method_name ~parameters ~kind () =
   Java (Java.make ~class_name ~return_type ~method_name ~parameters ~kind ())
 
 
+let make_csharp ~class_name ~return_type ~method_name ~parameters ~kind () =
+  CSharp (CSharp.make ~class_name ~return_type ~method_name ~parameters ~kind ())
+
+
+let make_objc_dealloc name = ObjC_Cpp (ObjC_Cpp.make_dealloc name)
+
+let make_objc_copyWithZone ~is_mutable name = ObjC_Cpp (ObjC_Cpp.make_copyWithZone ~is_mutable name)
+
 module Hashable = struct
-  type nonrec t = t
-
-  let equal = equal
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare, equal]
 
   let hash = hash
 
@@ -746,17 +907,13 @@ module LRUHash = LRUHashtbl.Make (Hashable)
 module HashQueue = Hash_queue.Make (Hashable)
 
 module Map = PrettyPrintable.MakePPMap (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 
   let pp = pp
 end)
 
 module Set = PrettyPrintable.MakePPSet (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 
   let pp = pp
 end)
@@ -772,7 +929,6 @@ let get_qualifiers pname =
       QualifiedCppName.empty
 
 
-(** Convert a proc name to a filename *)
 let to_filename pname =
   (* filenames for clang procs are REVERSED qualifiers with '#' as separator *)
   let pp_rev_qualified fmt pname =
@@ -791,21 +947,19 @@ let to_filename pname =
     | _ ->
         F.asprintf "%a" pp_unique_id pname
   in
-  DB.append_crc_cutoff proc_id
+  DB.append_crc_cutoff proc_id |> fst
 
 
 module SQLite = struct
   module T = struct
-    type nonrec t = t
-
-    let compare = compare
+    type nonrec t = t [@@deriving compare]
 
     let hash = hash
 
     let sexp_of_t p = Sexp.Atom (F.asprintf "%a" pp p)
   end
 
-  module Serializer = SqliteUtils.MarshalledDataForComparison (T)
+  module Serializer = SqliteUtils.MarshalledDataNOTForComparison (T)
 
   let pname_to_key = Base.Hashtbl.create (module T)
 
@@ -831,4 +985,24 @@ module UnitCache = struct
     in
     let cache_set pname value = cache := Some (pname, value) in
     (cache_get, cache_set)
+end
+
+module Normalizer = struct
+  include HashNormalizer.Make (struct
+    type nonrec t = t [@@deriving equal]
+
+    let hash = hash
+
+    let normalize t =
+      match t with
+      | Java java_pname ->
+          let java_pname' = Java.Normalizer.normalize java_pname in
+          if phys_equal java_pname java_pname' then t else Java java_pname'
+      | _ ->
+          t
+  end)
+
+  let reset () =
+    reset () ;
+    Java.Normalizer.reset ()
 end

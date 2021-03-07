@@ -354,25 +354,13 @@ exception RE_EXE_ERROR
 
 let pp_name fmt = F.pp_print_string fmt "biabduction"
 
-(** Return the list of normal ids occurring in the instructions *)
-let instrs_get_normal_vars instrs =
-  let do_instr res instr =
-    Sil.exps_of_instr instr
-    |> List.fold_left ~init:res ~f:(fun res e ->
-           Exp.free_vars e
-           |> Sequence.filter ~f:Ident.is_normal
-           |> Ident.hashqueue_of_sequence ~init:res )
-  in
-  Instrs.fold ~init:(Ident.HashQueue.create ()) ~f:do_instr instrs |> Ident.HashQueue.keys
-
-
 (** Perform symbolic execution for a node starting from an initial prop *)
 let do_symbolic_execution ({InterproceduralAnalysis.tenv; _} as analysis_data) proc_cfg handle_exn
     (node : ProcCfg.Exceptional.Node.t) (prop : Prop.normal Prop.t) (path : Paths.Path.t) =
   State.mark_execution_start node ;
   let instrs = ProcCfg.Exceptional.instrs node in
   (* fresh normal vars must be fresh w.r.t. instructions *)
-  Ident.update_name_generator (instrs_get_normal_vars instrs) ;
+  Ident.update_name_generator (Instrs.instrs_get_normal_vars instrs) ;
   let pset =
     SymExec.node handle_exn analysis_data proc_cfg node
       (Paths.PathSet.from_renamed_list [(prop, path)])
@@ -396,19 +384,25 @@ let forward_tabulate ({InterproceduralAnalysis.proc_desc; err_log; tenv; _} as a
     in
     ( match pre_opt with
     | Some pre ->
-        L.d_strln "Precondition:" ; Prop.d_prop pre ; L.d_ln ()
+        L.d_strln "Precondition:" ;
+        Prop.d_prop pre ;
+        L.d_ln ()
     | None ->
         () ) ;
     L.d_strln "SIL INSTR:" ;
     Procdesc.Node.d_instrs ~highlight:(AnalysisState.get_instr ()) curr_node ;
     L.d_ln () ;
-    BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Error exn ;
+    BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn ;
     State.mark_instr_fail exn
   in
   let exe_iter f pathset =
     let ps_size = Paths.PathSet.size pathset in
     let cnt = ref 0 in
-    let exe prop path = State.set_path path None ; incr cnt ; f prop path !cnt ps_size in
+    let exe prop path =
+      State.set_path path None ;
+      incr cnt ;
+      f prop path !cnt ps_size
+    in
     Paths.PathSet.iter exe pathset
   in
   let print_node_preamble curr_node pathset_todo =
@@ -477,19 +471,10 @@ let forward_tabulate ({InterproceduralAnalysis.proc_desc; err_log; tenv; _} as a
 
 
 (** Remove locals and formals, and check if the address of a stack variable is left in the result *)
-let remove_locals_formals_and_check {InterproceduralAnalysis.proc_desc; err_log; tenv; _} proc_cfg p
-    =
+let remove_locals_formals_and_check {InterproceduralAnalysis.tenv; _} proc_cfg p =
   let pdesc = ProcCfg.Exceptional.proc_desc proc_cfg in
-  let pvars, p' = PropUtil.remove_locals_formals tenv pdesc p in
-  let check_pvar pvar =
-    if not (Pvar.is_frontend_tmp pvar) then
-      let loc = ProcCfg.Exceptional.Node.loc (ProcCfg.Exceptional.exit_node proc_cfg) in
-      let dexp_opt, _ = Errdesc.vpath_find tenv p (Exp.Lvar pvar) in
-      let desc = Errdesc.explain_stack_variable_address_escape loc pvar dexp_opt in
-      let exn = Exceptions.Stack_variable_address_escape (desc, __POS__) in
-      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning exn
-  in
-  List.iter ~f:check_pvar pvars ; p'
+  let _pvars, p' = PropUtil.remove_locals_formals tenv pdesc p in
+  p'
 
 
 (** Collect the analysis results for the exit node. *)
@@ -641,7 +626,7 @@ let prop_init_formals_seed tenv new_formals (prop : 'a Prop.t) : Prop.exposed Pr
         match !Language.curr_language with
         | Clang ->
             Exp.Sizeof {typ; nbytes= None; dynamic_length= None; subtype= Subtype.exact}
-        | Java ->
+        | Java | CIL ->
             Exp.Sizeof {typ; nbytes= None; dynamic_length= None; subtype= Subtype.subtypes}
       in
       Prop.mk_ptsto_lvar tenv Prop.Fld_init Predicates.inst_formal (pv, texp, None)
@@ -739,7 +724,8 @@ let execute_filter_prop ({InterproceduralAnalysis.tenv; _} as analysis_data) pro
             precondition
         in
         let spec = BiabductionSummary.{pre; posts; visited} in
-        L.d_decrease_indent () ; Some spec )
+        L.d_decrease_indent () ;
+        Some spec )
   with RE_EXE_ERROR ->
     AnalysisCallbacks.html_debug_new_node_session ~pp_name init_node ~f:(fun () ->
         L.d_printfln ~color:Red "#### [FUNCTION %a] ...ERROR" Procname.pp pname ;
@@ -795,7 +781,7 @@ let perform_analysis_phase ({InterproceduralAnalysis.proc_desc; err_log; tenv} a
     in
     let get_results (wl : Worklist.t) () =
       State.process_execution_failures
-        (BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning) ;
+        (BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log) ;
       let results = collect_analysis_result analysis_data wl proc_cfg in
       let specs =
         try extract_specs analysis_data (ProcCfg.Exceptional.proc_desc proc_cfg) results
@@ -804,8 +790,7 @@ let perform_analysis_phase ({InterproceduralAnalysis.proc_desc; err_log; tenv} a
             Exceptions.Internal_error
               (Localise.verbatim_desc "Leak_while_collecting_specs_after_footprint")
           in
-          BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Error
-            exn ;
+          BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn ;
           (* returning no specs *) []
       in
       (specs, BiabductionSummary.FOOTPRINT)
@@ -882,7 +867,7 @@ let custom_error_preconditions summary =
 let remove_this_not_null tenv prop =
   let collect_hpred (var_option, hpreds) = function
     | Predicates.Hpointsto (Exp.Lvar pvar, Eexp (Exp.Var var, _), _)
-      when Language.curr_language_is Java && Pvar.is_this pvar ->
+      when (Language.curr_language_is Java || Language.curr_language_is CIL) && Pvar.is_this pvar ->
         (Some var, hpreds)
     | hpred ->
         (var_option, hpred :: hpreds)
@@ -920,8 +905,8 @@ let report_custom_errors {InterproceduralAnalysis.proc_desc; err_log; tenv} summ
     if all_post_error || is_unavoidable tenv pre then
       let loc = Procdesc.get_loc proc_desc in
       let err_desc = Localise.desc_custom_error loc in
-      let exn = Exceptions.Custom_error (custom_error, err_desc) in
-      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Error exn
+      let exn = Exceptions.Custom_error (custom_error, Error, err_desc) in
+      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn
   in
   List.iter ~f:report error_preconditions
 
@@ -1072,7 +1057,7 @@ let perform_transition ({InterproceduralAnalysis.tenv; _} as analysis_data) proc
             BiabductionConfig.allow_leak := allow_leak ;
             L.debug Analysis Medium "Error in collect_preconditions for %a@." Procname.pp proc_name ;
             let error = Exceptions.recognize_exception exn in
-            let err_str = "exception raised " ^ error.name.IssueType.unique_id in
+            let err_str = "exception raised " ^ error.issue_type.unique_id in
             L.(debug Analysis Medium) "Error: %s %a@." err_str L.pp_ocaml_pos_opt error.ocaml_pos ;
             [] )
     in
@@ -1117,5 +1102,5 @@ let analyze_procedure ({InterproceduralAnalysis.proc_desc; err_log} as analysis_
   try Some (analyze_procedure_aux analysis_data)
   with exn ->
     IExn.reraise_if exn ~f:(fun () -> not (Exceptions.handle_exception exn)) ;
-    BiabductionReporting.log_error_using_state proc_desc err_log exn ;
+    BiabductionReporting.log_issue_using_state proc_desc err_log exn ;
     None

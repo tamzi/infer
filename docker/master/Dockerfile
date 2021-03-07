@@ -22,6 +22,7 @@ RUN apt-get update && \
       make \
       openjdk-11-jdk-headless \
       patch \
+      patchelf \
       pkg-config \
       python3.7 \
       python3-distutils \
@@ -40,7 +41,7 @@ RUN opam init --reinit --bare --disable-sandboxing --yes --auto-setup
 
 # Download the latest Infer master
 RUN cd / && \
-    git clone --recurse-submodules https://github.com/facebook/infer/
+    git clone --depth 1 --recurse-submodules https://github.com/facebook/infer/
 
 # Build opam deps first, then clang, then infer. This way if any step
 # fails we don't lose the significant amount of work done in the
@@ -54,8 +55,9 @@ RUN cd /infer && \
 
 # Generate a release
 RUN cd /infer && \
-    make install \
+    make install-with-libs \
     BUILD_MODE=opt \
+    PATCHELF=patchelf \
     DESTDIR="/infer-release" \
     libdir_relative_to_bindir="../lib"
 

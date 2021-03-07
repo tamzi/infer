@@ -19,7 +19,8 @@ let has_trace {Jsonbug_t.bug_trace; _} = not (List.is_empty bug_trace)
 let with_file_fmt file ~f =
   Utils.with_file_out file ~f:(fun outc ->
       let fmt = F.formatter_of_out_channel outc in
-      f fmt ; F.pp_print_flush fmt () )
+      f fmt ;
+      F.pp_print_flush fmt () )
 
 
 let pp_trace_item ~show_source_context fmt
@@ -75,30 +76,30 @@ let read_report report_json = Atdgen_runtime.Util.Json.from_file Jsonbug_j.read_
 let explore ~selector_limit ~report_txt:_ ~report_json ~show_source_context ~selected
     ~max_nested_level =
   let report = read_report report_json in
-  let issue_to_display =
-    match (selected, report) with
-    | Some n, _ -> (
-      (* an issue number has been pre-selected, use that *)
-      match List.nth report n with
-      | None ->
-          L.die UserError "Cannot select issues #%d: only %d issues in '%s'" n (List.length report)
-            report_json
-      | Some issue ->
-          Some (n, issue) )
-    | None, [] ->
-        (* empty report, can't print anything *)
-        L.progress "No issues found in '%s', exiting.@\n" report_json ;
-        None
-    | None, [issue] ->
-        (* single-issue report: no need to prompt the user to select which issue to display *)
-        L.progress "Auto-selecting the only issue in '%s'@\n%!" report_json ;
-        Some (0, issue)
-    | None, _ :: _ :: _ ->
-        (* user prompt *)
-        Some (user_select_issue ~selector_limit report)
+  let display_issue issue =
+    L.result "@\n%a" (pp_issue_with_trace ~show_source_context ~max_nested_level) issue
   in
-  Option.iter issue_to_display ~f:(fun issue ->
-      L.result "@\n%a" (pp_issue_with_trace ~show_source_context ~max_nested_level) issue )
+  match (selected, report) with
+  | Some `All, _ ->
+      List.iteri report ~f:(fun n issue -> display_issue (n, issue))
+  | Some (`Select n), _ -> (
+    (* an issue number has been pre-selected, use that *)
+    match List.nth report n with
+    | None ->
+        L.die UserError "Cannot select issues #%d: only %d issues in '%s'" n (List.length report)
+          report_json
+    | Some issue ->
+        display_issue (n, issue) )
+  | None, [] ->
+      (* empty report, can't print anything *)
+      L.progress "No issues found in '%s', exiting.@\n" report_json
+  | None, [issue] ->
+      (* single-issue report: no need to prompt the user to select which issue to display *)
+      L.progress "Auto-selecting the only issue in '%s'@\n%!" report_json ;
+      display_issue (0, issue)
+  | None, _ :: _ :: _ ->
+      (* user prompt *)
+      display_issue (user_select_issue ~selector_limit report)
 
 
 module GitHub = struct

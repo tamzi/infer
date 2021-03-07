@@ -43,17 +43,9 @@ module Allocsite : sig
 end
 
 module Loc : sig
-  type field_typ
+  type prim = private Var of Var.t | Allocsite of Allocsite.t [@@deriving compare]
 
-  type t = private
-    | Var of Var.t  (** abstract location of variable *)
-    | Allocsite of Allocsite.t  (** abstract location of allocsites *)
-    | Field of {prefix: t; fn: Fieldname.t; typ: field_typ}
-        (** field appended abstract locations, i.e., [prefix.fn] *)
-    | StarField of {prefix: t; last_field: Fieldname.t}
-        (** field appended abstract locations, but some of intermediate fields are abstracted, i.e.,
-            [prefix.*.fn] *)
-  [@@deriving equal]
+  type t = prim BufferOverrunField.t [@@deriving compare, equal]
 
   include PrettyPrintable.PrintableOrderedType with type t := t
 
@@ -104,7 +96,9 @@ module Loc : sig
 
   val represents_multiple_values : t -> bool
 
-  val append_field : ?typ:Typ.typ -> t -> fn:Fieldname.t -> t
+  val is_objc_collection_internal_array : t -> bool
+
+  val append_field : ?typ:Typ.t -> t -> Fieldname.t -> t
   (** It appends field. [typ] is the type of [fn]. *)
 end
 
@@ -115,6 +109,8 @@ module PowLoc : sig
 
   val compare : t -> t -> int
 
+  val get_parent_field : t -> t
+
   val append_field : t -> fn:Fieldname.t -> t
 
   val append_star_field : t -> fn:Fieldname.t -> t
@@ -122,6 +118,8 @@ module PowLoc : sig
   val bot : t
 
   val add : Loc.t -> t -> t
+
+  val of_list : Loc.t list -> t
 
   val exists : (Loc.t -> bool) -> t -> bool
 
@@ -135,7 +133,7 @@ module PowLoc : sig
 
   val fold : (Loc.t -> 'a -> 'a) -> t -> 'a -> 'a
 
-  val cast : Typ.typ -> t -> t
+  val cast : Typ.t -> t -> t
 
   val of_c_strlen : t -> t
   (** It appends the [strlen] field. *)
@@ -161,6 +159,11 @@ module PowLoc : sig
       [Boolean.EqualOrder.ne], etc. *)
 
   val to_set : t -> LocSet.t
+
+  val get_linked_list_next : lhs:t -> rhs:t -> Loc.t option
+  (** It checks whether [rhs] is of [lhs.any_field], which is a heuristic for detecting a linked
+      list, e.g. [x = x.next()]. It returns [Some lhs] if the condition is satisfied, [None]
+      otherwise. *)
 end
 
 val can_strong_update : PowLoc.t -> bool

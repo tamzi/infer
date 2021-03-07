@@ -8,8 +8,8 @@
 open! IStd
 module F = Format
 
-module D = UninitDomain.Domain
 (** Forward analysis to compute uninitialized variables at each program point *)
+module D = UninitDomain.Domain
 
 module MaybeUninitVars = UninitDomain.MaybeUninitVars
 module AliasedVars = AbstractDomain.FiniteSet (UninitDomain.VarPair)
@@ -78,7 +78,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
         access_expr
     in
     let ltr = [Errlog.make_trace_element 0 loc "" []] in
-    Reporting.log_error proc_desc err_log ~loc ~ltr IssueType.uninitialized_value message
+    Reporting.log_issue proc_desc err_log ~loc ~ltr Uninit IssueType.uninitialized_value message
 
 
   let is_struct t = match t.Typ.desc with Typ.Tstruct _ -> true | _ -> false
@@ -86,7 +86,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
   let is_array t = match t.Typ.desc with Typ.Tarray _ -> true | _ -> false
 
   let get_formals pname =
-    AnalysisCallbacks.get_proc_desc pname |> Option.map ~f:Procdesc.get_formals
+    AnalysisCallbacks.proc_resolve_attributes pname |> Option.map ~f:ProcAttributes.get_formals
 
 
   let should_report_var pdesc tenv maybe_uninit_vars access_expr =
@@ -95,6 +95,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
     | Some typ, (Var.ProgramVar pv, _) ->
         (not (Pvar.is_frontend_tmp pv))
         && (not (Procdesc.is_captured_pvar pdesc pv))
+        && (not (Procdesc.has_modify_in_block_attr pdesc pv))
         && MaybeUninitVars.mem access_expr maybe_uninit_vars
         && should_report_on_type typ
     | _, _ ->
@@ -328,7 +329,8 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
             () ) ;
         {astate with maybe_uninit_vars}
     | Assume (expr, _, _, loc) ->
-        check_hil_expr expr ~loc ; astate
+        check_hil_expr expr ~loc ;
+        astate
     | Metadata _ ->
         astate
 

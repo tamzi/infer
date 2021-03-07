@@ -26,6 +26,8 @@ let compare_pointerness _ _ = 0
 (** signed and unsigned integer literals *)
 type t = {signedness: signedness; i: Z.t; pointerness: pointerness} [@@deriving compare]
 
+let yojson_of_t {i} = [%yojson_of: string] (Z.to_string i)
+
 exception OversizedShift
 
 let area {signedness; i} =
@@ -71,6 +73,8 @@ let of_int32 = of_z Z.of_int32
 let of_int = of_z Z.of_int
 
 let of_string = of_z Z.of_string
+
+let of_big_int = of_z Fn.id
 
 let z_to_int_opt i = try Some (Z.to_int i) with Z.Overflow -> None
 
@@ -155,3 +159,5 @@ let min i1 i2 = if leq i1 i2 then i1 else i2
 let pp f intlit = if isnull intlit then F.pp_print_string f "null" else Z.pp_print f intlit.i
 
 let to_string i = F.asprintf "%a" pp i
+
+let equal i1 i2 = eq i1 i2

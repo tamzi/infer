@@ -5,7 +5,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-package codetoanalyze.java.nullsafe_default;
+package codetoanalyze.java.nullsafe;
 
 import android.support.v4.app.Fragment;
 import com.facebook.infer.annotation.Cleanup;
@@ -78,5 +78,24 @@ public class FieldNotNullable {
     notNullable = s; // OK
     notNullable = getNotNullable(); // OK
   }
+
+  void setNullableToExternalIsBAD(@Nullable String s) {
+    SomeExternalClass obj = new SomeExternalClass();
+    obj.externalNotNull = s;
+  }
+
+  void setNonNullToExternalIsOK(String s) {
+    SomeExternalClass obj = new SomeExternalClass();
+    obj.externalNotNull = s;
+  }
+
+  void setNullableToExternalNullableIsOK(@Nullable String s) {
+    SomeExternalClass obj = new SomeExternalClass();
+    obj.externalNullable = s;
+  }
 }
 
+class SomeExternalClass {
+  public String externalNotNull;
+  public @Nullable String externalNullable;
+}

@@ -15,13 +15,15 @@ val checker :
   -> CostDomain.summary option
 
 val instantiate_cost :
-     Typ.IntegerWidths.t
+     ?get_closure_callee_cost:(Procname.t -> CostDomain.BasicCostWithReason.t option)
+  -> default_closure_cost:Ints.NonNegativeInt.t
+  -> Typ.IntegerWidths.t
   -> inferbo_caller_mem:BufferOverrunDomain.Mem.t
   -> callee_pname:Procname.t
   -> callee_formals:(Pvar.t * Typ.t) list
   -> params:(Exp.t * Typ.t) list
-  -> callee_cost:CostDomain.BasicCost.t
+  -> callee_cost:CostDomain.BasicCostWithReason.t
   -> loc:Location.t
-  -> CostDomain.BasicCost.t
+  -> CostDomain.BasicCostWithReason.t
 
 val is_report_suppressed : Procname.t -> bool

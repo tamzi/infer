@@ -58,10 +58,22 @@ opam_switch_create_if_needed () {
             break
         fi
     done
+    opam_root="${OPAMROOT:-}"
     if [ "$switch_exists" = "no" ]; then
-        rm -rf "$OPAMROOT/$switch"
+        if [ -n "$opam_root" ]; then
+            rm -rf "$opam_root/$switch" || true
+        fi
         opam switch create "$switch" "$compiler"
     fi
 }
 
 opam_require_version_2
+
+# removes packages that cannot be found by ocamlfind
+opam_remove_broken_package () {
+    local pkg="$1"
+    if ! ocamlfind query "${pkg}"; then
+        echo "ocamlfind cannot find ${pkg} package. Removing the package..."
+        opam remove "${pkg}" || true
+    fi
+}

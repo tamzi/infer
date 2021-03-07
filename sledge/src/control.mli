@@ -7,14 +7,9 @@
 
 (** The analysis' semantics of control flow. *)
 
-type exec_opts =
-  { bound: int  (** Loop/recursion unrolling bound *)
-  ; skip_throw: bool  (** Treat throw as unreachable *)
-  ; function_summaries: bool  (** Use function summarisation *)
-  ; entry_points: string list
-  ; globals: Domain_used_globals.r }
+module Make (_ : Domain_intf.Opts) (Dom : Domain_intf.Dom) : sig
+  val exec_pgm : Llair.program -> unit
 
-module Make (Dom : Domain_intf.Dom) : sig
-  val exec_pgm : exec_opts -> Llair.t -> unit
-  val compute_summaries : exec_opts -> Llair.t -> Dom.summary list Reg.Map.t
+  val compute_summaries :
+    Llair.program -> Dom.summary list Llair.Function.Map.t
 end

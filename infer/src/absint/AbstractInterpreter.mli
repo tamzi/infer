@@ -31,7 +31,7 @@ module type S = sig
     -> initial:TransferFunctions.Domain.t
     -> Procdesc.t
     -> TransferFunctions.Domain.t option
-  (** compute and return the postcondition for the given {Procdesc.t} starting from [initial].
+  (** compute and return the postcondition for the given {!Procdesc.t} starting from [initial].
       [pp_instr] is used for the debug HTML and passed as a hook to handle both SIL and HIL CFGs. *)
 
   val exec_cfg :
@@ -63,13 +63,13 @@ end
 module type Make = functor (TransferFunctions : TransferFunctions.SIL) ->
   S with module TransferFunctions = TransferFunctions
 
-module MakeRPO : Make
 (** create an intraprocedural abstract interpreter from transfer functions using the reverse
     post-order scheduler *)
+module MakeRPO : Make
 
-module MakeWTO : Make
 (** create an intraprocedural abstract interpreter from transfer functions using Bourdoncle's
     strongly connected component weak topological order *)
+module MakeWTO : Make
 
 (** In the disjunctive interpreter, the domain is a set of abstract states representing a
     disjunction between these states. The transfer functions are executed on each state in the

@@ -12,14 +12,14 @@ AC_PREREQ([2.63])
 # - the values below
 # - opam
 AC_INIT([Infer],
-        [0.17.0],
+        [1.0.0],
         [https://github.com/facebook/infer/issues/])
 
 AC_CONFIG_SRCDIR([infer/src/istd/IStd.ml])
 
 # WARNING: keep in sync with above
-INFER_MAJOR=0
-INFER_MINOR=17
+INFER_MAJOR=1
+INFER_MINOR=0
 INFER_PATCH=0
 
 AC_SUBST([INFER_MAJOR])
@@ -336,14 +336,10 @@ AC_SUBST([ENABLE_OCAML_BINANNOT])
 
 
 # We use Buck to run the Infer tests
-AC_MSG_CHECKING([which .buckversion to use])
-fb_buckversion_file=facebook/dependencies/dotbuckversion
-oss_buckversion_file=dotbuckversion
 AS_IF([test x"$is_facebook_tree" = x"yes"],
-  [buckversion_file="$fb_buckversion_file"],
-  [buckversion_file="$oss_buckversion_file"])
-cat "$buckversion_file" > ".buckversion"
-AC_MSG_RESULT([$buckversion_file])
+  AC_MSG_CHECKING([which .buck-java8 to use])
+  cp "facebook/dependencies/dotbuck-java8" ".buck-java8"
+  AC_MSG_RESULT([facebook/dependencies/dotbuck-java8]))
 
 
 AC_CHECK_TOOL([GETCONF], [getconf], [no])
@@ -378,6 +374,8 @@ if test x"$NDKBUILD" = x"no"; then
     [$PATH$PATH_SEPARATOR$ANDROID_NDK$PATH_SEPARATOR/opt/android_ndk/r15c])
 fi
 
+AC_CHECK_TOOL([NINJA], [ninja], [no])
+
 AC_CHECK_TOOL([XCPRETTY], [xcpretty], [no])
 
 AC_CHECK_TOOL([SED], [sed], [no])
@@ -394,6 +392,15 @@ AS_IF([test "$SED" != "xno"], [
 AC_SUBST([GNU_SED])
 
 AC_CHECK_TOOL([BREW], [brew], [no])
+
+AC_CHECK_TOOL([INSTALL_NAME_TOOL], [install_name_tool], [no])
+AC_SUBST([INSTALL_NAME_TOOL])
+AC_CHECK_TOOL([LDD], [ldd], [no])
+AC_SUBST([LDD])
+AC_CHECK_TOOL([OTOOL], [otool], [no])
+AC_SUBST([OTOOL])
+AC_CHECK_TOOL([PATCHELF], [patchelf], [no])
+AC_SUBST([PATCHELF])
 
 AC_CHECK_INFER_MAN_LAST_MODIFIED()
 

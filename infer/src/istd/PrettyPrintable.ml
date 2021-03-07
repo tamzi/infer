@@ -28,6 +28,12 @@ module type PrintableOrderedType = sig
   include PrintableType with type t := t
 end
 
+module type PrintableEquatableOrderedType = sig
+  include Caml.Set.OrderedType
+
+  include PrintableEquatableType with type t := t
+end
+
 module type PPSet = sig
   include Caml.Set.S
 
@@ -209,11 +215,15 @@ module type PrintableRankedType = sig
 
   val equal : t -> t -> bool
 
-  val to_rank : t -> int
+  type rank
+
+  val to_rank : t -> rank
 end
 
 module type PPUniqRankSet = sig
-  type t
+  type t [@@deriving compare, equal]
+
+  type rank
 
   type elt
 
@@ -221,13 +231,13 @@ module type PPUniqRankSet = sig
 
   val empty : t
 
-  val equal : t -> t -> bool
-
-  val find_rank : t -> int -> elt option
+  val find_rank : t -> rank -> elt option
 
   val fold : t -> init:'accum -> f:('accum -> elt -> 'accum) -> 'accum
 
   val fold_map : t -> init:'accum -> f:('accum -> elt -> 'accum * elt) -> 'accum * t
+
+  val for_all : f:(elt -> bool) -> t -> bool
 
   val is_empty : t -> bool
 
@@ -239,17 +249,26 @@ module type PPUniqRankSet = sig
 
   val singleton : elt -> t
 
+  val elements : t -> elt list
+
   val remove : elt -> t -> t
+
+  val mem : elt -> t -> bool
 
   val union_prefer_left : t -> t -> t
 
   val pp : ?print_rank:bool -> F.formatter -> t -> unit
 end
 
-module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type elt = Val.t = struct
-  module Map = MakePPMonoMap (Int) (Val)
+module MakePPUniqRankSet
+    (Rank : PrintableEquatableOrderedType)
+    (Val : PrintableRankedType with type rank = Rank.t) :
+  PPUniqRankSet with type elt = Val.t and type rank = Rank.t = struct
+  module Map = MakePPMonoMap (Rank) (Val)
 
   type t = Map.t
+
+  type rank = Rank.t
 
   type elt = Val.t
 
@@ -257,11 +276,15 @@ module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type e
 
   let empty = Map.empty
 
+  let compare = Map.compare Val.compare
+
   let equal = Map.equal Val.equal
 
   let find_rank m rank = Map.find_opt rank m
 
   let fold map ~init ~f = Map.fold (fun _key value accum -> f accum value) map init
+
+  let for_all ~f map = Map.for_all (fun _rank value -> f value) map
 
   let is_empty = Map.is_empty
 
@@ -278,7 +301,7 @@ module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type e
     Map.mapi
       (fun rank value ->
         let value' = f value in
-        assert (Int.equal rank (Val.to_rank value')) ;
+        assert (Rank.equal rank (Val.to_rank value')) ;
         value' )
       m
 
@@ -294,12 +317,15 @@ module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type e
     (!accum, m')
 
 
+  let elements map = Map.bindings map |> List.map ~f:snd
+
   let pp ?(print_rank = false) fmt map =
-    if print_rank then Map.pp fmt map
-    else pp_collection ~pp_item:Val.pp fmt (Map.bindings map |> List.map ~f:snd)
+    if print_rank then Map.pp fmt map else pp_collection ~pp_item:Val.pp fmt (elements map)
 
 
   let remove value map = Map.remove (Val.to_rank value) map
+
+  let mem value map = Map.mem (Val.to_rank value) map
 
   let singleton value = add Map.empty value
 

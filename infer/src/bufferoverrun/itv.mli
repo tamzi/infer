@@ -19,7 +19,7 @@ module ItvRange : sig
 end
 
 module ItvPure : sig
-  type t [@@deriving compare]
+  type t [@@deriving compare, equal]
 
   val pp : F.formatter -> t -> unit
 
@@ -148,6 +148,9 @@ val top : t
 val zero : t
 (** 0 *)
 
+val one : t
+(** 1 *)
+
 val zero_one : t
 (** [0, 1] *)
 
@@ -266,7 +269,7 @@ val of_offset_path : is_void:bool -> Symb.SymbolPath.partial -> t
 
 val of_length_path : is_void:bool -> Symb.SymbolPath.partial -> t
 
-val of_modeled_path : is_expensive:bool -> Symb.SymbolPath.partial -> t
+val of_modeled_path : Symb.SymbolPath.partial -> t
 
 val is_offset_path_of : Symb.SymbolPath.partial -> t -> bool
 

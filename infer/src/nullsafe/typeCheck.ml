@@ -15,7 +15,7 @@ type typecheck_result =
 
 (** Module to treat selected complex expressions as constants. *)
 module ComplexExpressions = struct
-  let procname_instanceof = Procname.equal BuiltinDecl.__instanceof
+  let procname_instanceof pname = Procname.equal BuiltinDecl.__instanceof pname
 
   let is_annotated_with predicate tenv procname =
     match PatternMatch.lookup_attributes tenv procname with
@@ -31,17 +31,23 @@ module ComplexExpressions = struct
         false
 
 
+  (* given a predicate that requries Java procname, return a filter that requires generic prodname
+   *)
+  let java_predicate_to_pname_predicate java_predicate pname =
+    match pname with Procname.Java java_pname -> java_predicate java_pname | _ -> false
+
+
   let procname_is_false_on_null tenv procname =
     is_annotated_with Annotations.ia_is_false_on_null tenv procname
-    || Models.is_false_on_null procname
+    || java_predicate_to_pname_predicate Models.is_false_on_null procname
 
 
   let procname_is_true_on_null tenv procname =
     is_annotated_with Annotations.ia_is_true_on_null tenv procname
-    || Models.is_true_on_null procname
+    || java_predicate_to_pname_predicate Models.is_true_on_null procname
 
 
-  let procname_containsKey = Models.is_containsKey
+  let procname_containsKey = java_predicate_to_pname_predicate Models.is_containsKey
 
   (** Recognize *all* the procedures treated specially in conditionals *)
   let procname_used_in_condition pn =
@@ -111,9 +117,9 @@ type find_canonical_duplicate = Procdesc.Node.t -> Procdesc.Node.t
 type checks = {eradicate: bool; check_ret_type: check_return_type list}
 
 (** Typecheck an expression. *)
-let rec typecheck_expr ({IntraproceduralAnalysis.tenv; _} as analysis_data) ~nullsafe_mode
-    find_canonical_duplicate visited checks node instr_ref typestate e tr_default loc :
-    TypeState.range =
+let rec typecheck_expr ({IntraproceduralAnalysis.tenv; proc_desc= curr_proc_desc} as analysis_data)
+    ~nullsafe_mode find_canonical_duplicate visited checks node instr_ref typestate e tr_default loc
+    : TypeState.range =
   L.d_with_indent ~name:"typecheck_expr" ~pp_result:TypeState.pp_range (fun () ->
       L.d_printfln "Expr: %a" Exp.pp e ;
       match e with
@@ -154,9 +160,15 @@ let rec typecheck_expr ({IntraproceduralAnalysis.tenv; _} as analysis_data) ~nul
               (typ, InferredNullability.create TypeOrigin.OptimisticFallback)
               loc
           in
-          let object_origin = InferredNullability.get_origin inferred_nullability in
+          let object_origin = InferredNullability.get_simple_origin inferred_nullability in
+          let curr_procname =
+            Procdesc.get_proc_name curr_proc_desc
+            |> Procname.as_java_exn
+                 ~explanation:"typecheck_expr: attempt to typecheck non-Java method"
+          in
+          let class_under_analysis = Procname.Java.get_class_type_name curr_procname in
           let tr_new =
-            match AnnotatedField.get tenv field_name typ with
+            match AnnotatedField.get tenv field_name ~class_typ:typ ~class_under_analysis with
             | Some AnnotatedField.{annotated_type= field_type} ->
                 ( field_type.typ
                 , InferredNullability.create
@@ -201,7 +213,7 @@ let handle_field_access_via_temporary idenv curr_pname typestate exp =
   let pvar_get_origin pvar =
     match TypeState.lookup_pvar pvar typestate with
     | Some (_, inferred_nullability) ->
-        Some (InferredNullability.get_origin inferred_nullability)
+        Some (InferredNullability.get_simple_origin inferred_nullability)
     | None ->
         None
   in
@@ -246,12 +258,13 @@ let funcall_exp_to_original_pvar_exp tenv curr_pname typestate exp ~is_assignmen
       exp
 
 
-let add_field_to_typestate_if_absent tenv access_loc typestate pvar object_origin field_name typ =
+let add_field_to_typestate_if_absent tenv access_loc typestate pvar object_origin field_name
+    ~field_class_typ ~class_under_analysis =
   match TypeState.lookup_pvar pvar typestate with
   | Some _ ->
       typestate
   | None -> (
-    match AnnotatedField.get tenv field_name typ with
+    match AnnotatedField.get tenv field_name ~class_typ:field_class_typ ~class_under_analysis with
     | Some AnnotatedField.{annotated_type= field_type} ->
         let range =
           ( field_type.typ
@@ -297,7 +310,7 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
               default )
       | Exp.Lvar _ ->
           default
-      | Exp.Lfield (exp_, fn, typ) ->
+      | Exp.Lfield (exp_, fn, field_class_typ) ->
           let inner_origin =
             ( match exp_ with
             | Exp.Lvar pvar ->
@@ -307,7 +320,7 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
             | _ ->
                 None )
             |> Option.value_map
-                 ~f:(fun (_, nullability) -> InferredNullability.get_origin nullability)
+                 ~f:(fun (_, nullability) -> InferredNullability.get_simple_origin nullability)
                  ~default:TypeOrigin.OptimisticFallback
           in
           let exp' = IDEnv.expand_expr_temps idenv original_node exp_ in
@@ -324,13 +337,19 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
           let pvar_to_str pvar =
             if Exp.is_this (Exp.Lvar pvar) then "" else Pvar.to_string pvar ^ "_"
           in
+          let class_under_analysis =
+            Procname.Java.get_class_type_name
+              (Procname.as_java_exn curr_pname
+                 ~explanation:"Attempt to typecheck non-Java procname")
+          in
           let res =
             match exp' with
             | Exp.Lvar pv when is_parameter_field pv || is_static_field pv ->
                 let fld_name = pvar_to_str pv ^ Fieldname.to_string fn in
                 let pvar = Pvar.mk (Mangled.from_string fld_name) curr_pname in
                 let typestate' =
-                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn typ
+                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn
+                    ~field_class_typ ~class_under_analysis
                 in
                 (Exp.Lvar pvar, typestate')
             | Exp.Lfield (_exp', fn', _) when Fieldname.is_java_outer_instance fn' ->
@@ -338,7 +357,8 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
                 let fld_name = Fieldname.to_string fn' ^ "_" ^ Fieldname.to_string fn in
                 let pvar = Pvar.mk (Mangled.from_string fld_name) curr_pname in
                 let typestate' =
-                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn typ
+                  add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn
+                    ~field_class_typ ~class_under_analysis
                 in
                 (Exp.Lvar pvar, typestate')
             | Exp.Lvar _ | Exp.Lfield _ -> (
@@ -347,7 +367,8 @@ let convert_complex_exp_to_pvar_and_register_field_in_typestate tenv idenv curr_
               | Some exp_str ->
                   let pvar = Pvar.mk (Mangled.from_string exp_str) curr_pname in
                   let typestate' =
-                    add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn typ
+                    add_field_to_typestate_if_absent tenv loc typestate pvar inner_origin fn
+                      ~field_class_typ ~class_under_analysis
                   in
                   (Exp.Lvar pvar, typestate')
               | None ->
@@ -473,7 +494,7 @@ let typecheck_expr_for_errors analysis_data ~nullsafe_mode find_canonical_duplic
     checks node instr_ref typestate1 exp1 loc1 : unit =
   ignore
     (typecheck_expr_simple analysis_data ~nullsafe_mode find_canonical_duplicate calls_this checks
-       node instr_ref typestate1 exp1 Typ.void TypeOrigin.OptimisticFallback loc1)
+       node instr_ref typestate1 exp1 StdTyp.void TypeOrigin.OptimisticFallback loc1)
 
 
 (** Get the values of a vararg parameter given the pvar used to assign the elements by looking for
@@ -518,10 +539,11 @@ let do_preconditions_check_not_null
           TypeErr.register_error analysis_data find_canonical_duplicate
             (Condition_redundant
                { is_always_true= true
+               ; loc
                ; condition_descr= EradicateChecks.explain_expr tenv node cond
-               ; nonnull_origin= InferredNullability.get_origin nullability })
-            (Some instr_ref) ~nullsafe_mode loc ) ;
-        let previous_origin = InferredNullability.get_origin nullability in
+               ; nonnull_origin= InferredNullability.get_simple_origin nullability })
+            (Some instr_ref) ~nullsafe_mode ) ;
+        let previous_origin = InferredNullability.get_simple_origin nullability in
         let new_origin = TypeOrigin.InferredNonnull {previous_origin} in
         TypeState.add pvar
           (t, InferredNullability.create new_origin)
@@ -570,7 +592,7 @@ let do_preconditions_check_state instr_ref idenv tenv curr_pname curr_annotated_
     (* handle the annotation flag for pvar *)
     match TypeState.lookup_pvar pvar typestate1 with
     | Some (t, nullability) ->
-        let previous_origin = InferredNullability.get_origin nullability in
+        let previous_origin = InferredNullability.get_simple_origin nullability in
         let new_origin = TypeOrigin.InferredNonnull {previous_origin} in
         TypeState.add pvar
           (t, InferredNullability.create new_origin)
@@ -627,26 +649,27 @@ let do_preconditions_check_state instr_ref idenv tenv curr_pname curr_annotated_
       typestate'
 
 
+let object_typ = StdTyp.Java.pointer_to_java_lang_object
+
 (* Handle m.put(k,v) as assignment pvar = v for the pvar associated to m.get(k) *)
 let do_map_put ({IntraproceduralAnalysis.proc_desc= curr_pdesc; tenv; _} as analysis_data)
     call_params callee_pname loc node calls_this checks instr_ref ~nullsafe_mode
     find_canonical_duplicate typestate' =
   (* Get the proc name for map.get() from map.put() *)
   let pname_get_from_pname_put pname_put =
-    let object_t = JavaSplitName.java_lang_object in
-    let parameters = [object_t] in
+    let parameters = [object_typ] in
     pname_put
     |> Procname.Java.replace_method_name "get"
-    |> Procname.Java.replace_return_type object_t
+    |> Procname.Java.replace_return_type object_typ
     |> Procname.Java.replace_parameters parameters
   in
   match call_params with
   | ((_, Exp.Lvar pv_map), _) :: ((_, exp_key), _) :: ((_, exp_value), typ_value) :: _ -> (
       (* Convert the dexp for k to the dexp for m.get(k) *)
       let convert_dexp_key_to_dexp_get dopt =
-        match (dopt, callee_pname) with
-        | Some dexp_key, Procname.Java callee_pname_java ->
-            let pname_get = Procname.Java (pname_get_from_pname_put callee_pname_java) in
+        match dopt with
+        | Some dexp_key ->
+            let pname_get = Procname.Java (pname_get_from_pname_put callee_pname) in
             let dexp_get = DExp.Dconst (Const.Cfun pname_get) in
             let dexp_map = DExp.Dpvar pv_map in
             let args = [dexp_map; dexp_key] in
@@ -673,49 +696,87 @@ let do_map_put ({IntraproceduralAnalysis.proc_desc= curr_pdesc; tenv; _} as anal
 
 
 (* Handle assignment fron a temp pvar in a condition.
-   This recognizes the handling of temp variables in ((x = ...) != null) *)
-let handle_assignment_in_condition_for_sil_prune idenv node pvar =
-  match Procdesc.Node.get_preds node with
-  | [prev_node] ->
-      let found = ref None in
-      let do_instr i =
-        match i with
-        | Sil.Store {e1= e; e2= e'} when Exp.equal (Exp.Lvar pvar) (IDEnv.expand_expr idenv e') ->
-            found := Some e
-        | _ ->
-            ()
-      in
-      Instrs.iter ~f:do_instr (Procdesc.Node.get_instrs prev_node) ;
-      !found
-  | _ ->
-      None
+   This recognizes the handling of temp variables in ((x = ...) != null)
 
+   The main idea is to take a quick look back in the CFG for any assignments
+   from [pvar]. *)
+let handle_assignment_in_condition_for_sil_prune idenv node pvar =
+  L.d_with_indent ~pp_result:(Pp.option Exp.pp) ~name:"handle_assignment_in_condition_for_sil_prune"
+    (fun () ->
+      L.d_printfln "Pvar being pruned: %a" (Pvar.pp Pp.text) pvar ;
+      (* We need to find the first *unique* immediate predecessor with non-empty
+         list of instructions. Since some nodes like Join_node can have empty list of instrs,
+          we need to traverse CFG a bit. *)
+      let rec find_pred_node_with_instrs node =
+        match Procdesc.Node.get_preds node with
+        | [pred] ->
+            if Instrs.is_empty (Procdesc.Node.get_instrs pred) then find_pred_node_with_instrs pred
+            else Some pred
+        | _ ->
+            None
+      in
+      (* Inspect instructions within the node to find assignments from [pvar] *)
+      let find_aliased_var node =
+        let inspect_instr instr =
+          match instr with
+          | Sil.Store {e1= e; e2= e'} -> (
+              let expanded_rhs = IDEnv.expand_expr idenv e' in
+              L.d_printfln "Found store instr: %a; RHS expands to: %a"
+                (Sil.pp_instr ~print_types:false Pp.text)
+                instr Exp.pp expanded_rhs ;
+              match expanded_rhs with Exp.Lvar v when Pvar.equal v pvar -> Some e | _ -> None )
+          | _ ->
+              None
+        in
+        (* Here we check last instructions first. IDK if it makes a difference, but
+           it is at least compatible with the previous behaviour *)
+        Instrs.find_map (Procdesc.Node.get_instrs node |> Instrs.reverse_order) ~f:inspect_instr
+      in
+      match find_pred_node_with_instrs node with
+      | Some prev_node ->
+          L.d_printfln "Found non-empty unique predecessor node: #%a" Procdesc.Node.pp prev_node ;
+          find_aliased_var prev_node
+      | _ ->
+          None )
+
+
+let pp_normalized_cond fmt (_, exp) = Exp.pp fmt exp
 
 let rec normalize_cond_for_sil_prune_rec idenv ~node ~original_node cond =
-  match cond with
-  | Exp.UnOp (Unop.LNot, c, top) ->
-      let node', c' = normalize_cond_for_sil_prune_rec idenv ~node ~original_node c in
-      (node', Exp.UnOp (Unop.LNot, c', top))
-  | Exp.BinOp (bop, c1, c2) ->
-      let node', c1' = normalize_cond_for_sil_prune_rec idenv ~node ~original_node c1 in
-      let node'', c2' = normalize_cond_for_sil_prune_rec idenv ~node:node' ~original_node c2 in
-      (node'', Exp.BinOp (bop, c1', c2'))
-  | Exp.Var _ ->
-      let c' = IDEnv.expand_expr idenv cond in
-      if not (Exp.equal c' cond) then normalize_cond_for_sil_prune_rec idenv ~node ~original_node c'
-      else (node, c')
-  | Exp.Lvar pvar when Pvar.is_frontend_tmp pvar -> (
-    match handle_assignment_in_condition_for_sil_prune idenv original_node pvar with
-    | None -> (
-      match Decompile.find_program_variable_assignment node pvar with
-      | Some (node', id) ->
-          (node', Exp.Var id)
-      | None ->
-          (node, cond) )
-    | Some e2 ->
-        (node, e2) )
-  | c ->
-      (node, c)
+  L.d_with_indent ~name:"normalize_cond_for_sil_prune_rec" ~pp_result:pp_normalized_cond (fun () ->
+      L.d_printfln "cond=%a" Exp.pp cond ;
+      match cond with
+      | Exp.UnOp (Unop.LNot, c, top) ->
+          L.d_printfln "UnOp" ;
+          let node', c' = normalize_cond_for_sil_prune_rec idenv ~node ~original_node c in
+          (node', Exp.UnOp (Unop.LNot, c', top))
+      | Exp.BinOp (bop, c1, c2) ->
+          L.d_printfln "BinOp" ;
+          let node', c1' = normalize_cond_for_sil_prune_rec idenv ~node ~original_node c1 in
+          let node'', c2' = normalize_cond_for_sil_prune_rec idenv ~node:node' ~original_node c2 in
+          L.d_printfln "c1=%a@\nc2=%a" Exp.pp c1 Exp.pp c2 ;
+          (node'', Exp.BinOp (bop, c1', c2'))
+      | Exp.Var _ ->
+          L.d_printfln "Var" ;
+          let c' = IDEnv.expand_expr idenv cond in
+          L.d_printfln "c'=%a" Exp.pp c' ;
+          if not (Exp.equal c' cond) then
+            normalize_cond_for_sil_prune_rec idenv ~node ~original_node c'
+          else (node, c')
+      | Exp.Lvar pvar when Pvar.is_frontend_tmp pvar -> (
+          L.d_printfln "Lvar" ;
+          match handle_assignment_in_condition_for_sil_prune idenv original_node pvar with
+          | None -> (
+            match Decompile.find_program_variable_assignment node pvar with
+            | Some (node', id) ->
+                (node', Exp.Var id)
+            | None ->
+                (node, cond) )
+          | Some e2 ->
+              (node, e2) )
+      | c ->
+          L.d_printfln "other" ;
+          (node, c) )
 
 
 (* Normalize the condition by resolving temp variables. *)
@@ -775,10 +836,9 @@ let rec check_condition_for_sil_prune
           (DExp.Dretcall
             (DExp.Dconst (Const.Cfun (Procname.Java pname_java)), args, loc, call_flags)) ->
           let pname_java' =
-            let object_t = JavaSplitName.java_lang_object in
             pname_java
             |> Procname.Java.replace_method_name "get"
-            |> Procname.Java.replace_return_type object_t
+            |> Procname.Java.replace_return_type object_typ
           in
           let fun_dexp = DExp.Dconst (Const.Cfun (Procname.Java pname_java')) in
           Some (DExp.Dretcall (fun_dexp, args, loc, call_flags))
@@ -793,7 +853,9 @@ let rec check_condition_for_sil_prune
     | Some expr_str ->
         (* Add pvar representing call to `get` to a typestate, indicating that it is a non-nullable *)
         let pvar = Pvar.mk (Mangled.from_string expr_str) curr_pname in
-        let range = (Typ.void, InferredNullability.create TypeOrigin.CallToGetKnownToContainsKey) in
+        let range =
+          (StdTyp.void, InferredNullability.create TypeOrigin.CallToGetKnownToContainsKey)
+        in
         let typestate_with_new_pvar = TypeState.add pvar range typestate in
         typestate_with_new_pvar
           ~descr:"modelling result of Map.get() since containsKey() returned true"
@@ -806,7 +868,7 @@ let rec check_condition_for_sil_prune
       | Some (t, current_nullability) ->
           let new_origin =
             TypeOrigin.InferredNonnull
-              {previous_origin= InferredNullability.get_origin current_nullability}
+              {previous_origin= InferredNullability.get_simple_origin current_nullability}
           in
           let new_nullability = InferredNullability.create new_origin in
           TypeState.add pvar (t, new_nullability) typestate' ~descr
@@ -836,8 +898,8 @@ let rec check_condition_for_sil_prune
       *)
       let typ, inferred_nullability =
         typecheck_expr_simple analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
-          checks original_node instr_ref typestate pvar_expr Typ.void TypeOrigin.OptimisticFallback
-          loc
+          checks original_node instr_ref typestate pvar_expr StdTyp.void
+          TypeOrigin.OptimisticFallback loc
       in
       if checks.eradicate then
         EradicateChecks.check_condition_for_redundancy analysis_data ~is_always_true:true_branch
@@ -959,9 +1021,8 @@ let calc_typestate_after_call
     ({IntraproceduralAnalysis.proc_desc= curr_pdesc; tenv; _} as analysis_data)
     find_canonical_duplicate calls_this checks idenv instr_ref signature_params cflags call_params
     ~is_anonymous_inner_class_constructor ~callee_annotated_signature ~callee_attributes
-    ~callee_pname ~callee_pname_java ~curr_annotated_signature ~nullsafe_mode ~typestate ~typestate1
-    loc node =
-  let resolve_param i (formal_param, actual_param) =
+    ~callee_pname ~curr_annotated_signature ~nullsafe_mode ~typestate ~typestate1 loc node =
+  let resolve_param param_index (formal_param, actual_param) =
     let (orig_e2, e2), t2 = actual_param in
     let _, inferred_nullability_actual =
       typecheck_expr analysis_data ~nullsafe_mode find_canonical_duplicate calls_this checks node
@@ -971,12 +1032,11 @@ let calc_typestate_after_call
         loc
     in
     let actual = (orig_e2, inferred_nullability_actual) in
-    let num = i + 1 in
     let is_formal_propagates_nullable =
       Annotations.ia_is_propagates_nullable
         formal_param.AnnotatedSignature.param_annotation_deprecated
     in
-    EradicateChecks.{num; formal= formal_param; actual; is_formal_propagates_nullable}
+    EradicateChecks.{param_index; formal= formal_param; actual; is_formal_propagates_nullable}
   in
   (* Infer nullability of function call result based on its signature *)
   let preliminary_resolved_ret =
@@ -1023,16 +1083,15 @@ let calc_typestate_after_call
           node typestate1 call_params callee_pname instr_ref loc
           (typecheck_expr analysis_data ~nullsafe_mode find_canonical_duplicate calls_this checks) ;
       if checks.eradicate then
-        EradicateChecks.check_call_parameters analysis_data ~nullsafe_mode
-          ~callee_annotated_signature find_canonical_duplicate node callee_attributes
-          resolved_params loc instr_ref ;
+        EradicateChecks.check_call_parameters ~callee_pname analysis_data ~nullsafe_mode
+          ~callee_annotated_signature find_canonical_duplicate node resolved_params loc instr_ref ;
       if Models.is_check_not_null callee_pname then
         match Models.get_check_not_null_parameter callee_pname with
         | Some index ->
             do_preconditions_check_not_null analysis_data instr_ref find_canonical_duplicate node
               loc curr_annotated_signature checks call_params idenv index ~is_vararg:false
               typestate1
-        | None when Procname.Java.is_vararg callee_pname_java ->
+        | None when Procname.Java.is_vararg callee_pname ->
             let last_parameter = List.length call_params in
             do_preconditions_check_not_null analysis_data instr_ref find_canonical_duplicate node
               loc curr_annotated_signature checks call_params idenv last_parameter ~is_vararg:true
@@ -1137,7 +1196,7 @@ let typecheck_sil_call_function
       let typestate_after_call, finally_resolved_ret =
         calc_typestate_after_call analysis_data find_canonical_duplicate calls_this checks idenv
           instr_ref signature_params cflags call_params ~is_anonymous_inner_class_constructor
-          ~callee_annotated_signature ~callee_attributes ~callee_pname ~callee_pname_java
+          ~callee_annotated_signature ~callee_attributes ~callee_pname:callee_pname_java
           ~curr_annotated_signature ~nullsafe_mode ~typestate ~typestate1 loc node
       in
       do_return finally_resolved_ret typestate_after_call )
@@ -1187,16 +1246,23 @@ let typecheck_instr ({IntraproceduralAnalysis.proc_desc= curr_pdesc; tenv; _} as
       let check_field_assign () =
         match e1 with
         | Exp.Lfield (_, field_name, field_class_type) -> (
-          match AnnotatedField.get tenv field_name field_class_type with
-          | Some annotated_field ->
-              if checks.eradicate then
-                EradicateChecks.check_field_assignment analysis_data ~nullsafe_mode
-                  find_canonical_duplicate node instr_ref typestate ~expr_rhs:e2 ~field_type:typ loc
-                  field_name annotated_field
-                  (typecheck_expr analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
-                     checks)
-          | None ->
-              L.d_strln "WARNING: could not fetch field declaration; skipping assignment check" )
+            let class_under_analysis =
+              Procname.Java.get_class_type_name
+                (Procname.as_java_exn curr_pname
+                   ~explanation:"Attempt to typecheck non-Java method")
+            in
+            match
+              AnnotatedField.get tenv field_name ~class_typ:field_class_type ~class_under_analysis
+            with
+            | Some annotated_field ->
+                if checks.eradicate then
+                  EradicateChecks.check_field_assignment analysis_data ~nullsafe_mode
+                    find_canonical_duplicate node instr_ref typestate ~expr_rhs:e2 ~field_type:typ
+                    loc field_name annotated_field
+                    (typecheck_expr analysis_data ~nullsafe_mode find_canonical_duplicate calls_this
+                       checks)
+            | None ->
+                L.d_strln "WARNING: could not fetch field declaration; skipping assignment check" )
         | _ ->
             ()
       in
@@ -1213,7 +1279,8 @@ let typecheck_instr ({IntraproceduralAnalysis.proc_desc= curr_pdesc; tenv; _} as
         | _ ->
             typestate
       in
-      check_field_assign () ; typestate2
+      check_field_assign () ;
+      typestate2
   (* Java `new` operators *)
   | Sil.Call ((id, _), Exp.Const (Const.Cfun pn), [(_, typ)], _, _)
     when Procname.equal pn BuiltinDecl.__new || Procname.equal pn BuiltinDecl.__new_array ->
@@ -1303,8 +1370,8 @@ let can_instrunction_throw tenv node instr =
 
 (* true if after this instruction the program interrupts *)
 let is_noreturn_instruction = function
-  | Sil.Call (_, Exp.Const (Const.Cfun callee_pname), _, _, _) when Models.is_noreturn callee_pname
-    ->
+  | Sil.Call (_, Exp.Const (Const.Cfun (Procname.Java callee_pname)), _, _, _)
+    when Models.is_noreturn callee_pname ->
       true
   | _ ->
       false

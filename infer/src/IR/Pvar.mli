@@ -19,7 +19,7 @@ type translation_unit = SourceFile.t option [@@deriving compare]
     + callee program variables, used to handle recursion ([x | callee] is distinguished from [x])
     + global variables
     + seed variables, used to store the initial value of formal parameters *)
-type t [@@deriving compare]
+type t [@@deriving compare, yojson_of]
 
 val compare_modulo_this : t -> t -> int
 (** Comparison considering all pvars named 'this'/'self' to be equal *)
@@ -59,6 +59,9 @@ val is_static_local : t -> bool
 
 val is_constant_array : t -> bool
 (** Check if the pvar has a constant array type *)
+
+val is_const : t -> bool
+(** Check if the pvar has a const type *)
 
 val is_local : t -> bool
 (** Check if the pvar is a (non-static) local var *)
@@ -115,6 +118,7 @@ val mk_global :
   -> ?is_static_local:bool
   -> ?is_static_global:bool
   -> ?is_constant_array:bool
+  -> ?is_const:bool
   -> ?translation_unit:SourceFile.t
   -> Mangled.t
   -> t
@@ -161,13 +165,19 @@ val is_pod : t -> bool
 val get_initializer_pname : t -> Procname.t option
 (** Get the procname of the initializer function for the given global variable *)
 
-val get_name_of_local_with_procname : t -> Mangled.t
-(** [get_name_of_local_with_procname var] Return a name that is composed of the name of var and the
-    name of the procname in case of locals *)
+val build_formal_from_pvar : t -> Mangled.t
+(** [build_formal_from_pvar var] Return a name that is composed of the name of var (and the name of
+    the procname in case of locals) *)
 
 val materialized_cpp_temporary : string
 
+val swap_proc_in_local_pvar : t -> Procname.t -> t
+
 val rename : f:(string -> string) -> t -> t
 
-module Set : PrettyPrintable.PPSet with type elt = t
 (** Sets of pvars. *)
+module Set : PrettyPrintable.PPSet with type elt = t
+
+type capture_mode = ByReference | ByValue [@@deriving compare, equal]
+
+val string_of_capture_mode : capture_mode -> string

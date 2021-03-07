@@ -10,11 +10,11 @@
 open! IStd
 open AbsLoc
 open! AbstractDomain.Types
+module BoField = BufferOverrunField
 module F = Format
 module L = Logging
 module OndemandEnv = BufferOverrunOndemandEnv
 module SPath = Symb.SymbolPath
-module SPathSet = Symb.SymbolPathSet
 module Trace = BufferOverrunTrace
 module TraceSet = Trace.Set
 module LoopHeadLoc = Location
@@ -82,128 +82,11 @@ module ModeledRange = struct
   let of_big_int ~trace z = NonBottom (Bounds.NonNegativeBound.of_big_int ~trace z)
 end
 
-module type TaintS = sig
-  include AbstractDomain.WithBottom
-
-  val compare : t -> t -> int
-
-  val pp : F.formatter -> t -> unit
-
-  val is_tainted : t -> bool
-
-  val param_of_path : SPath.partial -> t
-
-  val tainted_of_path : SPath.partial -> t
-
-  type eval_taint = SPath.partial -> t
-
-  val subst : t -> eval_taint -> t
-end
-
-module Taint = struct
-  module Unit = struct
-    include AbstractDomain.Empty
-
-    let compare _ _ = 0
-
-    let bottom = ()
-
-    let is_bottom _ = true
-
-    let pp _ _ = ()
-
-    let is_tainted _ = false
-
-    let param_of_path _ = ()
-
-    let tainted_of_path _ = ()
-
-    type eval_taint = SPath.partial -> t
-
-    let subst _ _ = ()
-  end
-
-  module ServiceHandlerRequest = struct
-    type t =
-      | Param of SPathSet.t
-      | Tainted of SPathSet.t (* The path set of [Tainted] should be non-empty. *)
-    [@@deriving compare]
-
-    let pp f = function
-      | Param params ->
-          if SPathSet.is_empty params then F.pp_print_string f "not tainted"
-          else F.fprintf f "unknown taint from %a" SPathSet.pp params
-      | Tainted params ->
-          assert (not (SPathSet.is_empty params)) ;
-          F.fprintf f "tainted by %a" SPathSet.pp params
-
-
-    let leq ~lhs ~rhs =
-      match (lhs, rhs) with
-      | Param _, Tainted _ ->
-          true
-      | Tainted _, Param _ ->
-          false
-      | Param params1, Param params2 | Tainted params1, Tainted params2 ->
-          SPathSet.subset params1 params2
-
-
-    let join x y =
-      match (x, y) with
-      | Param _, Tainted _ ->
-          y
-      | Tainted _, Param _ ->
-          x
-      | Param params1, Param params2 ->
-          Param (SPathSet.union params1 params2)
-      | Tainted params1, Tainted params2 ->
-          Tainted (SPathSet.union params1 params2)
-
-
-    let widen ~prev ~next ~num_iters:_ = join prev next
-
-    let bottom = Param SPathSet.empty
-
-    let is_bottom = function
-      | Param paths ->
-          SPathSet.is_empty paths
-      | Tainted paths ->
-          assert (not (SPathSet.is_empty paths)) ;
-          false
-
-
-    let is_tainted = function
-      | Tainted paths ->
-          assert (not (SPathSet.is_empty paths)) ;
-          true
-      | _ ->
-          false
-
-
-    let param_of_path path = Param (SPathSet.singleton path)
-
-    let tainted_of_path path = Tainted (SPathSet.singleton path)
-
-    type eval_taint = SPath.partial -> t
-
-    let subst x eval_taint =
-      match x with
-      | Tainted _ ->
-          x
-      | Param params ->
-          let accum_subst path acc = join acc (eval_taint path) in
-          SPathSet.fold accum_subst params bottom
-  end
-
-  include ( val if Config.bo_service_handler_request then (module ServiceHandlerRequest)
-                else (module Unit) : TaintS )
-end
-
 type eval_sym_trace =
   { eval_sym: Bounds.Bound.eval_sym
-  ; trace_of_sym: Symb.Symbol.t -> Trace.Set.t
   ; eval_locpath: PowLoc.eval_locpath
-  ; eval_taint: Taint.eval_taint }
+  ; eval_func_ptrs: FuncPtr.Set.eval_func_ptrs
+  ; trace_of_sym: Symb.Symbol.t -> Trace.Set.t }
 
 module Val = struct
   type t =
@@ -211,9 +94,9 @@ module Val = struct
     ; itv_thresholds: ItvThresholds.t
     ; itv_updated_by: ItvUpdatedBy.t
     ; modeled_range: ModeledRange.t
-    ; taint: Taint.t
     ; powloc: PowLoc.t
     ; arrayblk: ArrayBlk.t
+    ; func_ptrs: FuncPtr.Set.t
     ; traces: TraceSet.t }
 
   let bot : t =
@@ -221,9 +104,9 @@ module Val = struct
     ; itv_thresholds= ItvThresholds.empty
     ; itv_updated_by= ItvUpdatedBy.bottom
     ; modeled_range= ModeledRange.bottom
-    ; taint= Taint.bottom
     ; powloc= PowLoc.bot
     ; arrayblk= ArrayBlk.bot
+    ; func_ptrs= FuncPtr.Set.bottom
     ; traces= TraceSet.bottom }
 
 
@@ -239,16 +122,16 @@ module Val = struct
       if not (ModeledRange.is_bottom range) then
         F.fprintf fmt " (modeled_range:%a)" ModeledRange.pp range
     in
-    let taint_pp fmt taint =
-      if Config.bo_service_handler_request && Config.bo_debug >= 3 then
-        F.fprintf fmt "(%a)" Taint.pp taint
+    let func_ptrs_pp fmt func_ptrs =
+      if not (FuncPtr.Set.is_bottom func_ptrs) then
+        F.fprintf fmt ", func_ptrs:%a" FuncPtr.Set.pp func_ptrs
     in
     let trace_pp fmt traces =
       if Config.bo_debug >= 3 then F.fprintf fmt ", %a" TraceSet.pp traces
     in
-    F.fprintf fmt "(%a%a%a%a%a, %a, %a%a)" Itv.pp x.itv itv_thresholds_pp x.itv_thresholds
-      itv_updated_by_pp x.itv_updated_by modeled_range_pp x.modeled_range taint_pp x.taint PowLoc.pp
-      x.powloc ArrayBlk.pp x.arrayblk trace_pp x.traces
+    F.fprintf fmt "(%a%a%a%a, %a, %a%a%a)" Itv.pp x.itv itv_thresholds_pp x.itv_thresholds
+      itv_updated_by_pp x.itv_updated_by modeled_range_pp x.modeled_range PowLoc.pp x.powloc
+      ArrayBlk.pp x.arrayblk func_ptrs_pp x.func_ptrs trace_pp x.traces
 
 
   let unknown_from : Typ.t -> callee_pname:_ -> location:_ -> t =
@@ -259,9 +142,9 @@ module Val = struct
     ; itv_thresholds= ItvThresholds.empty
     ; itv_updated_by= ItvUpdatedBy.Top
     ; modeled_range= ModeledRange.bottom
-    ; taint= Taint.bottom
     ; powloc= (if is_int then PowLoc.bot else PowLoc.unknown)
     ; arrayblk= (if is_int then ArrayBlk.bottom else ArrayBlk.unknown)
+    ; func_ptrs= FuncPtr.Set.bottom
     ; traces }
 
 
@@ -272,9 +155,9 @@ module Val = struct
       && ItvThresholds.leq ~lhs:lhs.itv_thresholds ~rhs:rhs.itv_thresholds
       && ItvUpdatedBy.leq ~lhs:lhs.itv_updated_by ~rhs:rhs.itv_updated_by
       && ModeledRange.leq ~lhs:lhs.modeled_range ~rhs:rhs.modeled_range
-      && Taint.leq ~lhs:lhs.taint ~rhs:rhs.taint
       && PowLoc.leq ~lhs:lhs.powloc ~rhs:rhs.powloc
       && ArrayBlk.leq ~lhs:lhs.arrayblk ~rhs:rhs.arrayblk
+      && FuncPtr.Set.leq ~lhs:lhs.func_ptrs ~rhs:rhs.func_ptrs
 
 
   let widen ~prev ~next ~num_iters =
@@ -290,9 +173,9 @@ module Val = struct
           ItvUpdatedBy.widen ~prev:prev.itv_updated_by ~next:next.itv_updated_by ~num_iters
       ; modeled_range=
           ModeledRange.widen ~prev:prev.modeled_range ~next:next.modeled_range ~num_iters
-      ; taint= Taint.widen ~prev:prev.taint ~next:next.taint ~num_iters
       ; powloc= PowLoc.widen ~prev:prev.powloc ~next:next.powloc ~num_iters
       ; arrayblk= ArrayBlk.widen ~prev:prev.arrayblk ~next:next.arrayblk ~num_iters
+      ; func_ptrs= FuncPtr.Set.widen ~prev:prev.func_ptrs ~next:next.func_ptrs ~num_iters
       ; traces= TraceSet.join prev.traces next.traces }
 
 
@@ -304,9 +187,9 @@ module Val = struct
       ; itv_thresholds= ItvThresholds.join x.itv_thresholds y.itv_thresholds
       ; itv_updated_by= ItvUpdatedBy.join x.itv_updated_by y.itv_updated_by
       ; modeled_range= ModeledRange.join x.modeled_range y.modeled_range
-      ; taint= Taint.join x.taint y.taint
       ; powloc= PowLoc.join x.powloc y.powloc
       ; arrayblk= ArrayBlk.join x.arrayblk y.arrayblk
+      ; func_ptrs= FuncPtr.Set.join x.func_ptrs y.func_ptrs
       ; traces= TraceSet.join x.traces y.traces }
 
 
@@ -324,11 +207,11 @@ module Val = struct
 
   let get_all_locs : t -> PowLoc.t = fun x -> PowLoc.join x.powloc (get_array_locs x)
 
-  let get_taint : t -> Taint.t = fun x -> x.taint
+  let get_func_ptrs : t -> FuncPtr.Set.t = fun x -> x.func_ptrs
 
   let get_traces : t -> TraceSet.t = fun x -> x.traces
 
-  let of_itv ?(traces = TraceSet.bottom) ?(taint = Taint.bottom) itv = {bot with itv; taint; traces}
+  let of_itv ?(traces = TraceSet.bottom) itv = {bot with itv; traces}
 
   let of_int n = of_itv (Itv.of_int n)
 
@@ -360,6 +243,8 @@ module Val = struct
     of_c_array_alloc allocsite ~stride ~offset ~size ~traces:TraceSet.bottom
 
 
+  let of_func_ptrs func_ptrs = {bot with func_ptrs}
+
   let deref_of_literal_string s =
     let max_char = String.fold s ~init:0 ~f:(fun acc c -> max acc (Char.to_int c)) in
     of_itv (Itv.set_lb_zero (Itv.of_int max_char))
@@ -390,7 +275,6 @@ module Val = struct
       let itv_thresholds = ItvThresholds.join x.itv_thresholds y.itv_thresholds in
       let itv_updated_by = ItvUpdatedBy.join x.itv_updated_by y.itv_updated_by in
       let modeled_range = ModeledRange.join x.modeled_range y.modeled_range in
-      let taint = Taint.join x.taint y.taint in
       let traces =
         match f_trace with
         | Some f_trace ->
@@ -404,7 +288,7 @@ module Val = struct
           | true, true | false, false ->
               TraceSet.join x.traces y.traces )
       in
-      {bot with itv; itv_thresholds; itv_updated_by; modeled_range; taint; traces}
+      {bot with itv; itv_thresholds; itv_updated_by; modeled_range; traces}
 
 
   let lift_cmp_itv : (Itv.t -> Itv.t -> Boolean.t) -> Boolean.EqualOrder.t -> t -> t -> t =
@@ -578,7 +462,7 @@ module Val = struct
 
 
   let subst : t -> eval_sym_trace -> Location.t -> t =
-   fun x {eval_sym; trace_of_sym; eval_locpath; eval_taint} location ->
+   fun x {eval_sym; eval_locpath; eval_func_ptrs; trace_of_sym} location ->
     let symbols = get_symbols x in
     let traces_caller =
       Itv.SymbolSet.fold
@@ -590,9 +474,9 @@ module Val = struct
     let powloc_from_arrayblk, arrayblk = ArrayBlk.subst x.arrayblk eval_sym eval_locpath in
     { x with
       itv= Itv.subst x.itv eval_sym
-    ; taint= Taint.subst x.taint eval_taint
     ; powloc= PowLoc.join powloc powloc_from_arrayblk
     ; arrayblk
+    ; func_ptrs= FuncPtr.Set.subst x.func_ptrs eval_func_ptrs
     ; traces }
     (* normalize bottom *)
     |> normalize
@@ -618,14 +502,14 @@ module Val = struct
    fun location ~f v ->
     { v with
       arrayblk= ArrayBlk.transform_length ~f v.arrayblk
-    ; traces= Trace.(Set.add_elem location (through ~risky_fun:None)) v.traces }
+    ; traces= Trace.(Set.add_elem location Through) v.traces }
 
 
   let set_array_offset : Location.t -> Itv.t -> t -> t =
    fun location offset v ->
     { v with
       arrayblk= ArrayBlk.set_offset offset v.arrayblk
-    ; traces= Trace.(Set.add_elem location (through ~risky_fun:None)) v.traces }
+    ; traces= Trace.(Set.add_elem location Through) v.traces }
 
 
   let set_array_stride : Z.t -> t -> t =
@@ -635,7 +519,10 @@ module Val = struct
 
   let unknown_locs = of_pow_loc PowLoc.unknown ~traces:TraceSet.bottom
 
-  let is_bot x = Itv.is_bottom x.itv && PowLoc.is_bot x.powloc && ArrayBlk.is_bot x.arrayblk
+  let is_bot x =
+    Itv.is_bottom x.itv && PowLoc.is_bot x.powloc && ArrayBlk.is_bot x.arrayblk
+    && FuncPtr.Set.is_bottom x.func_ptrs
+
 
   let is_mone x = Itv.is_mone (get_itv x)
 
@@ -645,16 +532,16 @@ module Val = struct
 
   let cast typ v = {v with powloc= PowLoc.cast typ v.powloc}
 
-  let of_path tenv ~may_last_field ~is_service_handler integer_type_widths location typ path =
+  let of_path tenv ~may_last_field integer_type_widths location typ path =
     let traces_of_loc l =
       let trace = if Loc.is_global l then Trace.Global l else Trace.Parameter l in
       TraceSet.singleton location trace
     in
-    let itv_val ~non_int ~taint =
+    let itv_val ~non_int =
       let l = Loc.of_path path in
       let traces = traces_of_loc l in
       let unsigned = Typ.is_unsigned_int typ in
-      of_itv ~traces ~taint (Itv.of_normal_path ~unsigned ~non_int path)
+      of_itv ~traces (Itv.of_normal_path ~unsigned ~non_int path)
     in
     let ptr_to_c_array_alloc deref_path size =
       let allocsite = Allocsite.make_symbol deref_path in
@@ -666,21 +553,25 @@ module Val = struct
     L.d_printfln_escaped "Val.of_path %a : %a%s%s" SPath.pp_partial path (Typ.pp Pp.text) typ
       (if may_last_field then ", may_last_field" else "")
       (if is_java then ", is_java" else "") ;
-    let taint =
-      if (not Config.bo_service_handler_request) || is_java then Taint.bottom
-      else if Lazy.force_val is_service_handler && SPath.is_request path then
-        Taint.tainted_of_path path
-      else Taint.param_of_path path
-    in
     match typ.Typ.desc with
     | Tint (IBool | IChar | ISChar | IUChar | IUShort) ->
-        let v = itv_val ~non_int:is_java ~taint in
-        if Language.curr_language_is Java then set_itv_updated_by_unknown v
-        else set_itv_updated_by_addition v
+        let v = itv_val ~non_int:is_java in
+        if is_java then set_itv_updated_by_unknown v else set_itv_updated_by_addition v
     | Tfloat _ | Tfun | TVar _ ->
-        itv_val ~non_int:true ~taint |> set_itv_updated_by_unknown
+        itv_val ~non_int:true |> set_itv_updated_by_unknown
     | Tint _ | Tvoid ->
-        itv_val ~non_int:false ~taint |> set_itv_updated_by_addition
+        itv_val ~non_int:false |> set_itv_updated_by_addition
+    | Tptr ({desc= Tfun}, _) ->
+        of_func_ptrs (FuncPtr.Set.of_path path)
+    | Tptr ({desc= Tstruct name}, _)
+      when PatternMatch.is_subtype tenv name StdTyp.Name.Objc.ns_enumerator ->
+        (* NOTE: It generates a value of NSEnumerator specifically.  Especially, it assigns zero to
+           the offset, rather than a symbol, to avoid precision loss by limited handling of symbolic
+           values in the domain.  Although this is an unsound design choice, we expect it should not
+           that harmful for calculating WCET. *)
+        let allocsite = SPath.deref ~deref_kind:Deref_CPointer path |> Allocsite.make_symbol in
+        let size = Itv.of_length_path ~is_void:false path in
+        {bot with arrayblk= ArrayBlk.make_c allocsite ~offset:Itv.zero ~size ~stride:Itv.one}
     | Tptr (elt, _) ->
         if is_java || SPath.is_this path then
           let deref_kind =
@@ -730,7 +621,7 @@ module Val = struct
           let length = Itv.of_length_path ~is_void:false path in
           of_java_array_alloc allocsite ~length ~traces
       | Some JavaInteger ->
-          itv_val ~non_int:false ~taint:Taint.bottom
+          itv_val ~non_int:false
       | None ->
           let l = Loc.of_path path in
           let traces = traces_of_loc l in
@@ -759,14 +650,11 @@ module Val = struct
 
 
   let on_demand : default:t -> ?typ:Typ.t -> OndemandEnv.t -> Loc.t -> t =
-   fun ~default ?typ
-       {tenv; typ_of_param_path; may_last_field; entry_location; integer_type_widths; class_name} l ->
+   fun ~default ?typ {tenv; typ_of_param_path; may_last_field; entry_location; integer_type_widths}
+       l ->
     let do_on_demand path typ =
       let may_last_field = may_last_field path in
-      let is_service_handler =
-        lazy (Option.exists class_name ~f:(FbPatternMatch.is_subtype_of_fb_service_handler tenv))
-      in
-      of_path tenv ~may_last_field ~is_service_handler integer_type_widths entry_location typ path
+      of_path tenv ~may_last_field integer_type_widths entry_location typ path
     in
     match Loc.get_literal_string l with
     | Some s ->
@@ -776,23 +664,31 @@ module Val = struct
       | Some s ->
           of_itv (Itv.of_int (String.length s))
       | None -> (
-        match Loc.get_path l with
-        | None ->
-            L.d_printfln_escaped "Val.on_demand for %a -> no path" Loc.pp l ;
-            default
-        | Some path -> (
-          match typ_of_param_path path with
-          | None -> (
-            match typ with
-            | Some typ when Loc.is_global l ->
-                L.d_printfln_escaped "Val.on_demand for %a -> global" Loc.pp l ;
-                do_on_demand path typ
-            | _ ->
-                L.d_printfln_escaped "Val.on_demand for %a -> no type" Loc.pp l ;
-                default )
-          | Some typ ->
-              L.d_printfln_escaped "Val.on_demand for %a" Loc.pp l ;
-              do_on_demand path typ ) ) )
+        match l with
+        | Field {fn} when Fieldname.equal fn BufferOverrunField.java_linked_list_index ->
+            L.d_printfln_escaped "Val.on_demand for %a as zero" Loc.pp l ;
+            of_itv Itv.zero
+        | _ -> (
+          match Loc.get_path l with
+          | None ->
+              L.d_printfln_escaped "Val.on_demand for %a -> no path" Loc.pp l ;
+              default
+          | Some path -> (
+            match typ_of_param_path path with
+            | None -> (
+              match typ with
+              | Some typ when Loc.is_global l ->
+                  L.d_printfln_escaped "Val.on_demand for %a -> global" Loc.pp l ;
+                  do_on_demand path typ
+              | Some typ when Typ.is_pointer_to_function typ ->
+                  L.d_printfln_escaped "Val.on_demand for %a -> function pointer" Loc.pp l ;
+                  do_on_demand path typ
+              | _ ->
+                  L.d_printfln_escaped "Val.on_demand for %a -> no type" Loc.pp l ;
+                  default )
+            | Some typ ->
+                L.d_printfln_escaped "Val.on_demand for %a" Loc.pp l ;
+                do_on_demand path typ ) ) ) )
 
 
   module Itv = struct
@@ -809,6 +705,8 @@ module Val = struct
     let unknown_bool = of_itv Itv.unknown_bool
 
     let zero = of_itv Itv.zero
+
+    let one = of_itv Itv.one
   end
 end
 
@@ -847,6 +745,27 @@ module MemPure = struct
 
   let bot = empty
 
+  let get_linked_list_index loc mem =
+    let linked_list_index = Loc.append_field loc BufferOverrunField.java_linked_list_index in
+    Option.map (find_opt linked_list_index mem) ~f:(fun (_, v) -> (linked_list_index, v))
+
+
+  let get_objc_iterator_offset loc mem =
+    match find_opt loc mem with
+    | Some (_, array_v) -> (
+        let elem_loc = Val.get_all_locs array_v in
+        let array_set = PowLoc.get_parent_field elem_loc |> PowLoc.to_set in
+        match LocSet.max_elt_opt array_set with
+        | Some array_loc ->
+            let offset = Loc.append_field array_loc BufferOverrunField.objc_iterator_offset in
+            if Loc.is_unknown offset then None
+            else Option.map (find_opt offset mem) ~f:(fun (_, v) -> (offset, v))
+        | _ ->
+            None )
+    | _ ->
+        None
+
+
   let range :
          filter_loc:(Loc.t -> LoopHeadLoc.t option)
       -> node_id:ProcCfg.Normal.Node.id
@@ -857,6 +776,8 @@ module MemPure = struct
       (fun loc (_, v) acc ->
         match filter_loc loc with
         | Some loop_head_loc -> (
+            let loc, v = Option.value (get_linked_list_index loc mem) ~default:(loc, v) in
+            let loc, v = Option.value (get_objc_iterator_offset loc mem) ~default:(loc, v) in
             let itv_updated_by = Val.get_itv_updated_by v in
             match itv_updated_by with
             | Addition | Multiplication ->
@@ -887,7 +808,8 @@ module MemPure = struct
                 acc )
         | None ->
             acc )
-      mem Polynomials.NonNegativePolynomial.one
+      mem
+      (Polynomials.NonNegativePolynomial.one ())
 
 
   let join oenv astate1 astate2 =
@@ -925,7 +847,7 @@ module MemPure = struct
         prev next
 
 
-  let is_rep_multi_loc l m = Option.value_map ~default:false (find_opt l m) ~f:MVal.get_rep_multi
+  let is_rep_multi_loc l m = Option.exists (find_opt l m) ~f:MVal.get_rep_multi
 
   (** Collect the location that was increased by one, i.e., [x -> x+1] *)
   let get_incr_locs m =
@@ -983,6 +905,7 @@ module AliasTarget = struct
     | IteratorSimple of {i: IntLit.t; java_tmp: Loc.t option}
     | IteratorOffset of {alias_typ: alias_typ; i: IntLit.t; java_tmp: Loc.t option}
     | IteratorHasNext of {java_tmp: Loc.t option}
+    | IteratorNextObject of {objc_tmp: AbsLoc.Loc.t option}
     | Top
   [@@deriving compare]
 
@@ -1016,6 +939,8 @@ module AliasTarget = struct
             alias_typ_pp alias_typ pp_rhs pp_intlit i
       | IteratorHasNext {java_tmp} ->
           F.fprintf fmt "%t%a=hasNext(%t)" pp_lhs pp_java_tmp java_tmp pp_rhs
+      | IteratorNextObject {objc_tmp} ->
+          F.fprintf fmt "%t%a=nextObject(%t)" pp_lhs pp_java_tmp objc_tmp pp_rhs
       | Top ->
           F.fprintf fmt "%t=?%t" pp_lhs pp_rhs
 
@@ -1030,7 +955,8 @@ module AliasTarget = struct
     | Size {java_tmp= Some tmp}
     | IteratorSimple {java_tmp= Some tmp}
     | IteratorOffset {java_tmp= Some tmp}
-    | IteratorHasNext {java_tmp= Some tmp} ->
+    | IteratorHasNext {java_tmp= Some tmp}
+    | IteratorNextObject {objc_tmp= Some tmp} ->
         PowLoc.singleton tmp
     | Simple {java_tmp= None}
     | Size {java_tmp= None}
@@ -1039,6 +965,7 @@ module AliasTarget = struct
     | IteratorSimple {java_tmp= None}
     | IteratorOffset {java_tmp= None}
     | IteratorHasNext {java_tmp= None}
+    | IteratorNextObject {objc_tmp= None}
     | Top ->
         PowLoc.bot
 
@@ -1061,6 +988,8 @@ module AliasTarget = struct
         IteratorOffset {alias_typ; i; java_tmp= Option.bind java_tmp ~f}
     | IteratorHasNext {java_tmp} ->
         IteratorHasNext {java_tmp= Option.bind java_tmp ~f}
+    | IteratorNextObject {objc_tmp} ->
+        IteratorNextObject {objc_tmp= Option.bind objc_tmp ~f}
     | Top ->
         Top
 
@@ -1152,6 +1081,8 @@ module AliasTarget = struct
         IteratorOffset {a with java_tmp= Some loc}
     | IteratorHasNext _ ->
         IteratorHasNext {java_tmp= Some loc}
+    | IteratorNextObject _ ->
+        IteratorNextObject {objc_tmp= Some loc}
     | _ as alias ->
         alias
 end
@@ -1216,6 +1147,12 @@ module AliasTargets = struct
           ()
     in
     match iter is_simple_zero x with () -> None | exception Found rhs -> Some rhs
+
+
+  let find_size_alias x =
+    let exception Found of KeyRhs.t in
+    let is_size rhs = function AliasTarget.Size _ -> raise (Found rhs) | _ -> () in
+    match iter is_size x with () -> None | exception Found rhs -> Some rhs
 end
 
 module AliasMap = struct
@@ -1264,13 +1201,21 @@ module AliasMap = struct
    fun loc x -> find (KeyLhs.LocKey loc) x |> AliasTargets.map (AliasTarget.set_java_tmp loc)
 
 
+  let has_objc_collection_size_alias : Loc.t -> t -> bool =
+   fun loc x ->
+    AliasTargets.find_size_alias (find_loc loc x)
+    |> Option.exists ~f:Loc.is_objc_collection_internal_array
+
+
   let load : Ident.t -> Loc.t -> AliasTarget.t -> t -> t =
    fun id loc tgt x ->
     if Loc.is_unknown loc || AliasTarget.is_unknown tgt then x
     else
       let tgts =
         match tgt with
-        | AliasTarget.Simple {i} when IntLit.iszero i && Language.curr_language_is Java ->
+        | AliasTarget.Simple {i}
+          when IntLit.iszero i
+               && (Language.curr_language_is Java || has_objc_collection_size_alias loc x) ->
             find_loc loc x |> AliasTargets.add loc tgt
         | _ ->
             AliasTargets.singleton loc tgt
@@ -1286,22 +1231,20 @@ module AliasMap = struct
 
   let store : Loc.t -> Ident.t -> t -> t =
    fun l id x ->
-    if Language.curr_language_is Java then
-      let tgts = find_id id x in
-      if Loc.is_frontend_tmp l then add_aliases ~lhs:(KeyLhs.of_loc l) tgts x
-      else
-        let accum_java_tmp_alias rhs tgt acc =
-          match tgt with
-          | AliasTarget.Simple {i} when IntLit.iszero i && Loc.is_frontend_tmp rhs ->
-              add_alias ~lhs:(KeyLhs.of_id id) ~rhs:l
-                (AliasTarget.Simple {i; java_tmp= Some rhs})
-                acc
-              |> add_alias ~lhs:(KeyLhs.of_loc rhs) ~rhs:l (AliasTarget.Simple {i; java_tmp= None})
-          | _ ->
-              acc
-        in
-        AliasTargets.fold accum_java_tmp_alias tgts x
-    else x
+    let tgts = find_id id x in
+    if Loc.is_frontend_tmp l then add_aliases ~lhs:(KeyLhs.of_loc l) tgts x
+    else
+      let accum_java_tmp_alias rhs tgt acc =
+        match tgt with
+        | AliasTarget.Simple {i} when IntLit.iszero i && Loc.is_frontend_tmp rhs ->
+            add_alias ~lhs:(KeyLhs.of_id id) ~rhs:l (AliasTarget.Simple {i; java_tmp= Some rhs}) acc
+            |> add_alias ~lhs:(KeyLhs.of_loc rhs) ~rhs:l (AliasTarget.Simple {i; java_tmp= None})
+        | AliasTarget.IteratorNextObject _ | AliasTarget.IteratorSimple _ ->
+            add_alias ~lhs:(KeyLhs.of_loc l) ~rhs tgt acc
+        | _ ->
+            acc
+      in
+      AliasTargets.fold accum_java_tmp_alias tgts x
 
 
   let add_size_alias ~lhs ~lhs_v ~arr ~arr_size x =
@@ -1426,12 +1369,26 @@ module AliasMap = struct
         AliasTargets.fold accum_has_next_alias tgts x
     | _ ->
         x
+
+
+  let add_iterator_next_object_alias ~ret_id ~iterator x =
+    let open IOption.Let_syntax in
+    M.find_opt (KeyLhs.of_id iterator) x
+    >>= AliasTargets.find_simple_alias
+    >>| (fun rhs ->
+          add_alias ~lhs:(KeyLhs.of_id ret_id) ~rhs
+            (AliasTarget.IteratorNextObject {objc_tmp= None})
+            x )
+    |> Option.value ~default:x
 end
 
 module AliasRet = struct
   include AliasTargets
 
-  let pp : F.formatter -> t -> unit = fun fmt x -> F.pp_print_string fmt "ret=" ; pp fmt x
+  let pp : F.formatter -> t -> unit =
+   fun fmt x ->
+    F.pp_print_string fmt "ret=" ;
+    pp fmt x
 end
 
 module Alias = struct
@@ -1545,6 +1502,10 @@ module Alias = struct
 
   let add_iterator_has_next_alias : ret_id:Ident.t -> iterator:Ident.t -> t -> t =
    fun ~ret_id ~iterator a -> lift_map (AliasMap.add_iterator_has_next_alias ~ret_id ~iterator) a
+
+
+  let add_iterator_next_object_alias : ret_id:Ident.t -> iterator:Ident.t -> t -> t =
+   fun ~ret_id ~iterator a -> lift_map (AliasMap.add_iterator_next_object_alias ~ret_id ~iterator) a
 
 
   let remove_temp : Ident.t -> t -> t = fun temp -> lift_map (AliasMap.remove (KeyLhs.of_id temp))
@@ -1871,7 +1832,7 @@ module LatestPrune = struct
       match PowLoc.is_singleton_or_more (PowLoc.subst_loc (Loc.of_pvar x) eval_locpath) with
       | Empty ->
           Error `SubstBottom
-      | Singleton (Loc.Var (Var.ProgramVar x')) ->
+      | Singleton (BoField.Prim (Loc.Var (Var.ProgramVar x'))) ->
           Ok x'
       | Singleton _ | More ->
           Error `SubstFail
@@ -2059,8 +2020,18 @@ module MemReach = struct
   let init : get_summary -> OndemandEnv.t -> t =
    fun get_summary oenv ->
     let find_global_array loc =
-      Option.bind (Loc.get_global_array_initializer loc) ~f:(fun pname ->
-          Option.bind (get_summary pname) ~f:(find_opt loc) )
+      let open IOption.Let_syntax in
+      let* pname = Loc.get_global_array_initializer loc in
+      let* m = get_summary pname in
+      match loc with
+      | BoField.Field {prefix; fn} when Loc.is_global prefix ->
+          (* This case handles field access of global array:
+             n$0 = *x[n].field *)
+          let+ v = find_opt prefix m in
+          let locs = Val.get_all_locs v |> PowLoc.append_field ~fn in
+          find_set locs m
+      | _ ->
+          find_opt loc m
     in
     { stack_locs= StackLocs.bot
     ; mem_pure= MemPure.bot
@@ -2126,6 +2097,10 @@ module MemReach = struct
 
   let add_iterator_has_next_alias ~ret_id ~iterator m =
     {m with alias= Alias.add_iterator_has_next_alias ~ret_id ~iterator m.alias}
+
+
+  let add_iterator_next_object_alias ~ret_id ~iterator m =
+    {m with alias= Alias.add_iterator_next_object_alias ~ret_id ~iterator m.alias}
 
 
   let incr_iterator_simple_alias_on_call eval_sym_trace ~callee_exit_mem m =
@@ -2232,7 +2207,7 @@ module MemReach = struct
             Some v1
           in
           let apply_simple_alias1 ((m_acc, prunes_acc) as acc) = function
-            | Loc.Var (Var.ProgramVar y), i when Pvar.equal x y && IntLit.iszero i ->
+            | BoField.Prim (Loc.Var (Var.ProgramVar y)), i when Pvar.equal x y && IntLit.iszero i ->
                 (apply_prunes prunes m_acc, PrunePairs.union pruned_val_meet prunes_acc prunes)
             | _ ->
                 acc
@@ -2256,7 +2231,7 @@ module MemReach = struct
         let tgts = Alias.find_ret m.alias in
         let replace_latest_prune l tgt acc =
           match (l, tgt) with
-          | Loc.Var (ProgramVar pvar), AliasTarget.Simple {i} when IntLit.iszero i ->
+          | BoField.Prim (Loc.Var (ProgramVar pvar)), AliasTarget.Simple {i} when IntLit.iszero i ->
               {acc with latest_prune= LatestPrune.replace ~from:pvar ~to_:return m.latest_prune}
           | _ ->
               acc
@@ -2351,8 +2326,6 @@ module Mem = struct
   let unreachable : t = Unreachable
 
   let exc_raised : t = ExcRaised
-
-  let is_exc_raised = function ExcRaised -> true | _ -> false
 
   let leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
@@ -2510,6 +2483,10 @@ module Mem = struct
         m
 
 
+  let add_iterator_next_object_alias : ret_id:Ident.t -> iterator:Ident.t -> t -> t =
+   fun ~ret_id ~iterator m -> map ~f:(MemReach.add_iterator_next_object_alias ~ret_id ~iterator) m
+
+
   let incr_iterator_simple_alias_on_call eval_sym_trace ~callee_exit_mem m =
     match (callee_exit_mem, m) with
     | Reachable callee_exit_mem, Reachable m ->
@@ -2603,7 +2580,11 @@ module Mem = struct
 
   let get_c_strlen locs m =
     let get_c_strlen' loc acc =
-      match loc with Loc.Allocsite _ -> Val.join acc (find (Loc.of_c_strlen loc) m) | _ -> acc
+      match loc with
+      | BoField.Prim (Loc.Allocsite _) ->
+          Val.join acc (find (Loc.of_c_strlen loc) m)
+      | _ ->
+          acc
     in
     PowLoc.fold get_c_strlen' locs Val.bot
 

@@ -22,10 +22,6 @@ type lock_effect =
 
 type thread = BackgroundThread | MainThread | MainThreadIfTrue | UnknownThread
 
-val is_thread_utils_method : string -> Procname.t -> bool
-(** return true if the given method name is a utility class for checking what thread we're on TODO:
-    clean this up so it takes only a procname *)
-
 val get_lock_effect : Procname.t -> HilExp.t list -> lock_effect
 (** describe how this procedure behaves with respect to locking *)
 
@@ -55,5 +51,5 @@ val runs_on_ui_thread : Tenv.t -> Procname.t -> bool
 (** is method not transitively annotated [@WorkerThread] and is modeled or annotated [@UIThread] or
     equivalent? *)
 
-val is_modeled_ui_method : Tenv.t -> Procname.t -> bool
+val is_android_lifecycle_method : Tenv.t -> Procname.t -> bool
 (** is method a known Android UI thread callback (eg [Activity.onCreate]) *)

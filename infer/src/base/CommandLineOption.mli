@@ -93,7 +93,7 @@ val mk_string_list :
      ?default:string list
   -> ?default_to_string:(string list -> string)
   -> ?f:(string -> string)
-  -> string list ref t
+  -> string RevList.t ref t
 (** [mk_string_list] defines a [string list ref], initialized to [\[\]] unless overridden by
     [~default]. Each argument of an occurrence of the option will be prepended to the list, so the
     final value will be in the reverse order they appeared on the command line.
@@ -116,7 +116,7 @@ val mk_path_opt :
 (** analogous of [mk_string_opt] with the extra feature of [mk_path] *)
 
 val mk_path_list :
-  ?default:string list -> ?default_to_string:(string list -> string) -> string list ref t
+  ?default:string list -> ?default_to_string:(string list -> string) -> string RevList.t ref t
 (** analogous of [mk_string_list] with the extra feature of [mk_path] *)
 
 val mk_symbol :
@@ -136,7 +136,8 @@ val mk_symbol_seq :
 
 val mk_json : Yojson.Basic.t ref t
 
-val mk_anon : unit -> string list ref
+val mk_anon : unit -> string RevList.t ref
+  [@@warning "-32"]
 (** [mk_anon ()] defines a [string list ref] of the anonymous command line arguments, in the reverse
     order they appeared on the command line. *)
 
@@ -172,7 +173,7 @@ val mk_command_doc :
   -> ?notes:Cmdliner.Manpage.block list
   -> ?bugs:Cmdliner.Manpage.block list
   -> ?examples:Cmdliner.Manpage.block list
-  -> see_also:Cmdliner.Manpage.block list
+  -> ?see_also:Cmdliner.Manpage.block list
   -> string
   -> command_doc
 (** [mk_command_doc ~title ~section ~version ~short_description ~synopsis ~description ~see_also
@@ -208,8 +209,6 @@ val mk_subcommand :
 
 val args_env_var : string
 (** environment variable use to pass arguments from parent to child processes *)
-
-val strict_mode : bool
 
 val strict_mode_env_var : string
 

@@ -18,38 +18,38 @@ exception Type_tranlsation_error of string
 (** https://docs.oracle.com/javase/tutorial/java/nutsandbolts/datatypes.html *)
 let translate_basic_type = function
   | `Int ->
-      Typ.int
+      StdTyp.int
   | `Bool ->
-      Typ.boolean
+      StdTyp.boolean
   | `Byte ->
-      Typ.java_byte
+      StdTyp.Java.byte
   | `Char ->
-      Typ.java_char
+      StdTyp.Java.char
   | `Double ->
-      Typ.double
+      StdTyp.double
   | `Float ->
-      Typ.float
+      StdTyp.float
   | `Long ->
-      Typ.long
+      StdTyp.long
   | `Short ->
-      Typ.java_short
+      StdTyp.Java.short
 
 
 let cast_type = function
   | JBir.F2I | JBir.L2I | JBir.D2I ->
-      Typ.int
+      StdTyp.int
   | JBir.D2L | JBir.F2L | JBir.I2L ->
-      Typ.long
+      StdTyp.long
   | JBir.I2F | JBir.L2F | JBir.D2F ->
-      Typ.float
+      StdTyp.float
   | JBir.L2D | JBir.F2D | JBir.I2D ->
-      Typ.double
+      StdTyp.double
   | JBir.I2B ->
-      Typ.boolean
+      StdTyp.boolean
   | JBir.I2C ->
-      Typ.char
+      StdTyp.Java.char
   | JBir.I2S ->
-      Typ.java_short
+      StdTyp.Java.short
 
 
 let typename_of_classname cn = Typ.Name.Java.from_string (JBasics.cn_name cn)
@@ -69,15 +69,6 @@ let rec create_array_type typ dim =
     let content_typ = create_array_type typ (dim - 1) in
     Typ.(mk_ptr (mk_array content_typ))
   else typ
-
-
-let extract_cn_no_obj (typ : Typ.t) =
-  match typ.desc with
-  | Tptr ({desc= Tstruct (JavaClass _ as name)}, Pk_pointer) ->
-      let class_name = JBasics.make_cn (Typ.Name.name name) in
-      if JBasics.cn_equal class_name JBasics.java_lang_object then None else Some class_name
-  | _ ->
-      None
 
 
 (** Printing types *)
@@ -119,56 +110,7 @@ let object_type_to_string ot =
       array_type_to_string vt
 
 
-let string_of_basic_type = function
-  | `Bool ->
-      JConfig.boolean_st
-  | `Byte ->
-      JConfig.byte_st
-  | `Char ->
-      JConfig.char_st
-  | `Double ->
-      JConfig.double_st
-  | `Float ->
-      JConfig.float_st
-  | `Int ->
-      JConfig.int_st
-  | `Long ->
-      JConfig.long_st
-  | `Short ->
-      JConfig.short_st
-
-
-let rec string_of_type vt =
-  match vt with
-  | JBasics.TBasic bt ->
-      string_of_basic_type bt
-  | JBasics.TObject ot -> (
-    match ot with
-    | JBasics.TArray vt ->
-        string_of_type vt ^ "[]"
-    | JBasics.TClass cn ->
-        JBasics.cn_name cn )
-
-
 let package_to_string = function [] -> None | p -> Some (String.concat ~sep:"." p)
-
-let cn_to_java_type cn =
-  JavaSplitName.make
-    ?package:(package_to_string (JBasics.cn_package cn))
-    (JBasics.cn_simple_name cn)
-
-
-let vt_to_java_type vt =
-  match vt with
-  | JBasics.TBasic bt ->
-      JavaSplitName.of_string (string_of_basic_type bt)
-  | JBasics.TObject ot -> (
-    match ot with
-    | JBasics.TArray vt ->
-        JavaSplitName.of_string (string_of_type vt ^ "[]")
-    | JBasics.TClass cn ->
-        cn_to_java_type cn )
-
 
 let method_signature_names ms =
   let method_name = JBasics.ms_name ms in
@@ -177,11 +119,11 @@ let method_signature_names ms =
     | None when String.equal method_name JConfig.constructor_name ->
         None
     | None ->
-        Some (JavaSplitName.make JConfig.void)
+        Some StdTyp.void
     | Some vt ->
-        Some (vt_to_java_type vt)
+        Some (get_named_type vt)
   in
-  let args_types = List.map ~f:vt_to_java_type (JBasics.ms_args ms) in
+  let args_types = List.map ~f:get_named_type (JBasics.ms_args ms) in
   (return_type_name, method_name, args_types)
 
 
@@ -274,7 +216,7 @@ let rec get_method_procname program tenv cn ms kind =
 and translate_method_name program tenv m =
   let cn, ms = JBasics.cms_split (Javalib.get_class_method_signature m) in
   let proc_name = get_method_procname program tenv cn ms (get_method_kind m) in
-  JClasspath.add_missing_callee program proc_name cn ms ;
+  JProgramDesc.add_missing_callee program proc_name cn ms ;
   proc_name
 
 
@@ -284,7 +226,7 @@ and get_all_fields program tenv cn =
     (statics, fields)
   in
   let trans_fields classname =
-    match JClasspath.lookup_node classname program with
+    match JProgramDesc.lookup_node classname program with
     | Some (Javalib.JClass jclass) ->
         let superclass_fields =
           match jclass.Javalib.c_super_class with
@@ -325,7 +267,7 @@ and get_class_struct_typ =
       Javalib.m_fold (fun m procnames -> translate_method_name program tenv m :: procnames) node []
     in
     let node_name = Javalib.get_name node in
-    let java_location : Location.t option = JClasspath.get_java_location program node_name in
+    let java_location : Location.t option = JProgramDesc.get_java_location program node_name in
     ( match java_location with
     | Some loc ->
         L.debug Capture Verbose "Java location %s -> %a@." (JBasics.cn_name node_name)
@@ -344,7 +286,7 @@ and get_class_struct_typ =
         Tenv.mk_struct ~dummy:true tenv name
     | None -> (
         seen := JBasics.ClassSet.add cn !seen ;
-        match JClasspath.lookup_node cn program with
+        match JProgramDesc.lookup_node cn program with
         | None ->
             Tenv.mk_struct ~dummy:true tenv name
         | Some (Javalib.JInterface jinterface as node) ->
@@ -457,4 +399,4 @@ let rec expr_type (context : JContext.t) expr =
 
 (** Returns the return type of the method based on the return type specified in ms. *)
 let return_type program tenv ms =
-  match JBasics.ms_rtype ms with None -> Typ.void | Some vt -> value_type program tenv vt
+  match JBasics.ms_rtype ms with None -> StdTyp.void | Some vt -> value_type program tenv vt

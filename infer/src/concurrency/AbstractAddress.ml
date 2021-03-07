@@ -58,16 +58,24 @@ let pp_with_base pp_base fmt (base, accesses) =
     | ArrayAccess _ :: rest, _ ->
         F.fprintf fmt "%a[]" pp_rev_accesses rest
     | FieldAccess field_name :: Dereference :: rest, _ ->
-        let op = match !Language.curr_language with Clang -> "->" | Java -> "." in
+        let op = match !Language.curr_language with Clang -> "->" | Java -> "." | CIL -> "." in
         F.fprintf fmt "%a%s%a" pp_rev_accesses rest op Fieldname.pp field_name
-    | FieldAccess field_name :: rest, Clang ->
+    | FieldAccess field_name :: rest, _ ->
+        (* Java is allowed here only because the frontend is broken and generates
+           [FieldAccess] without a [Dereference] for static fields *)
         F.fprintf fmt "%a.%a" pp_rev_accesses rest Fieldname.pp field_name
     | Dereference :: rest, Clang ->
         F.fprintf fmt "*(%a)" pp_rev_accesses rest
     | TakeAddress :: rest, Clang ->
         F.fprintf fmt "&(%a)" pp_rev_accesses rest
+    | Dereference :: rest, CIL ->
+        F.fprintf fmt "*(%a)" pp_rev_accesses rest
+    | TakeAddress :: rest, CIL ->
+        F.fprintf fmt "&(%a)" pp_rev_accesses rest
     | access :: rest, Java ->
-        L.internal_error "Asked to print %a in Java mode@" (HilExp.Access.pp (fun _ _ -> ())) access ;
+        L.internal_error "Asked to print %a in Java mode@\n"
+          (HilExp.Access.pp (fun _ _ -> ()))
+          access ;
         pp_rev_accesses fmt rest
   in
   pp_rev_accesses fmt (List.rev accesses)
@@ -96,11 +104,11 @@ type t =
       (** method parameter represented by its 0-indexed position, root var is not used in comparison *)
 [@@deriving compare, equal]
 
-let get_typ tenv =
-  let class_type = Typ.(mk (Tstruct Name.Java.java_lang_class)) in
-  let some_ptr_to_class_type = Some Typ.(mk (Tptr (class_type, Pk_pointer))) in
-  function
-  | Class _ -> some_ptr_to_class_type | Global {path} | Parameter {path} -> get_typ tenv path
+let get_typ tenv = function
+  | Class _ ->
+      Some StdTyp.Java.pointer_to_java_lang_class
+  | Global {path} | Parameter {path} ->
+      get_typ tenv path
 
 
 let append ~on_to:(base, accesses) (_, accesses') =

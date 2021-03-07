@@ -11,7 +11,7 @@
 open! IStd
 
 (** Program and logical variables. *)
-type t [@@deriving compare]
+type t [@@deriving compare, yojson_of]
 
 val equal : t -> t -> bool
 (** Equality for identifiers. *)
@@ -28,14 +28,14 @@ type kind [@@deriving compare]
 val equal_kind : kind -> kind -> bool
 (** Equality for kind. *)
 
-module Set : Caml.Set.S with type elt = t
 (** Set for identifiers. *)
+module Set : Caml.Set.S with type elt = t
 
-module Hash : Caml.Hashtbl.S with type key = t
 (** Hash table with ident as key. *)
+module Hash : Caml.Hashtbl.S with type key = t
 
-module Map : Caml.Map.S with type key = t
 (** Map with ident as key. *)
+module Map : Caml.Map.S with type key = t
 
 module HashQueue : Hash_queue.S with type key = t
 
@@ -61,6 +61,8 @@ val knormal : kind
 
 val kfootprint : kind
 
+val knone : kind
+
 val name_spec : name
 (** Name used for spec variables *)
 
@@ -79,6 +81,8 @@ val name_to_string : name -> string
 val get_name : t -> name
 (** Name of the identifier. *)
 
+val create_with_stamp : kind -> name -> int -> t
+
 val create : kind -> int -> t
 (** Create an identifier with default name for the given kind *)
 
@@ -96,10 +100,6 @@ val update_name_generator : t list -> unit
 
 val create_fresh : kind -> t
 (** Create a fresh identifier with default name for the given kind. *)
-
-val create_fresh_specialized_with_blocks : kind -> t
-(** Create a fresh identifier with default name for the given kind, with a non-clashing id for objc
-    block specialization *)
 
 val create_path : string -> t
 (** Generate a normal identifier whose name encodes a path given as a string. *)

@@ -10,6 +10,7 @@
 open! IStd
 open AbsLoc
 open! AbstractDomain.Types
+module BoField = BufferOverrunField
 module Bound = Bounds.Bound
 module F = Format
 module L = Logging
@@ -136,9 +137,9 @@ module ArrInfo = struct
   let is_pointer : Symb.SymbolPath.partial -> t -> bool =
    fun path arr ->
     match (path, arr) with
-    | Deref ((Deref_COneValuePointer | Deref_CPointer), path), C {offset; size} ->
+    | BoField.Prim (Deref ((Deref_COneValuePointer | Deref_CPointer), path)), C {offset; size} ->
         Itv.is_offset_path_of path offset && Itv.is_length_path_of path size
-    | Deref (Deref_JavaPointer, path), Java {length} ->
+    | BoField.Prim (Deref (Deref_JavaPointer, path)), Java {length} ->
         Itv.is_length_path_of path length
     | _, _ ->
         false
@@ -274,10 +275,18 @@ module ArrInfo = struct
 
   let is_symbolic_length_of_path path info =
     match (path, info) with
-    | Symb.SymbolPath.Deref (_, prefix), Java {length} ->
+    | BoField.Prim (Symb.SymbolPath.Deref (_, prefix)), Java {length} ->
         Itv.is_length_path_of prefix length
     | _ ->
         false
+
+
+  let prune_offset_le_size info =
+    match info with
+    | C {offset; size; stride} ->
+        C {offset= Itv.prune_le offset size; size; stride}
+    | Java _ | Top ->
+        info
 end
 
 include AbstractDomain.Map (Allocsite) (ArrInfo)
@@ -341,11 +350,12 @@ let subst : t -> Bound.eval_sym -> PowLoc.eval_locpath -> PowLoc.t * t =
         let locs = eval_locpath path in
         let add_allocsite l (powloc_acc, acc) =
           match l with
-          | Loc.Allocsite (Symbol (Symb.SymbolPath.Deref (_, prefix)) as a)
+          | BoField.Prim
+              (Loc.Allocsite (Symbol (BoField.Prim (Symb.SymbolPath.Deref (_, prefix))) as a))
             when ArrInfo.is_symbolic_length_of_path path info ->
               let length = Itv.of_length_path ~is_void:false prefix in
               (powloc_acc, add a (ArrInfo.make_java ~length) acc)
-          | Loc.Allocsite a ->
+          | BoField.Prim (Loc.Allocsite a) ->
               (powloc_acc, add a info' acc)
           | _ ->
               if ArrInfo.is_pointer path info then (PowLoc.add l powloc_acc, acc)
@@ -383,6 +393,8 @@ let prune_binop : Binop.t -> t -> t -> t = fun c a1 a2 -> do_prune (ArrInfo.prun
 let prune_eq : t -> t -> t = fun a1 a2 -> do_prune ArrInfo.prune_eq a1 a2
 
 let prune_ne : t -> t -> t = fun a1 a2 -> do_prune ArrInfo.prune_ne a1 a2
+
+let prune_offset_le_size a = map ArrInfo.prune_offset_le_size a
 
 let set_length : Itv.t -> t -> t = fun length a -> map (ArrInfo.set_length length) a
 

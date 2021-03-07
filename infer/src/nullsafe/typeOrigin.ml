@@ -12,6 +12,13 @@ open! IStd
 type method_parameter_origin = Normal of AnnotatedSignature.param_signature | ObjectEqualsOverride
 [@@deriving compare]
 
+type method_call_origin =
+  { pname: Procname.Java.t
+  ; call_loc: Location.t
+  ; annotated_signature: AnnotatedSignature.t
+  ; is_defined: bool }
+[@@deriving compare]
+
 type t =
   | NullConst of Location.t
   | NonnullConst of Location.t
@@ -22,11 +29,7 @@ type t =
       ; access_loc: Location.t }
   | CurrMethodParameter of method_parameter_origin
   | This
-  | MethodCall of
-      { pname: Procname.t
-      ; call_loc: Location.t
-      ; annotated_signature: AnnotatedSignature.t
-      ; is_defined: bool }
+  | MethodCall of method_call_origin
   | CallToGetKnownToContainsKey
   | New
   | ArrayLengthResult
@@ -61,6 +64,8 @@ let get_nullability = function
     | AnnotatedNullability.Nullable _ ->
         (* Annotated as Nullable explicitly or implicitly *)
         Nullability.Nullable
+    | AnnotatedNullability.ProvisionallyNullable _ ->
+        Nullability.ProvisionallyNullable
     | AnnotatedNullability.UncheckedNonnull _
     | AnnotatedNullability.ThirdPartyNonnull
     | AnnotatedNullability.LocallyTrustedNonnull
@@ -96,7 +101,7 @@ let rec to_string = function
   | This ->
       "this"
   | MethodCall {pname} ->
-      Printf.sprintf "Fun %s" (Procname.to_simplified_string pname)
+      Printf.sprintf "Fun %s" (Procname.Java.to_simplified_string pname)
   | CallToGetKnownToContainsKey ->
       "CallToGetKnownToContainsKey"
   | New ->
@@ -114,19 +119,27 @@ let rec to_string = function
 let atline loc = " at line " ^ string_of_int loc.Location.line
 
 let get_method_ret_description pname call_loc
-    AnnotatedSignature.{model_source; ret= {ret_annotated_type= {nullability}}} =
+    AnnotatedSignature.{kind; ret= {ret_annotated_type= {nullability}}} =
   let should_show_class_name =
     (* Class name is generally redundant: the user knows line number and
        can immediatelly go to definition and see the function annotation.
        When something is modelled though, let's show the class name as well, so it is
        super clear what exactly is modelled.
     *)
-    Option.is_some model_source
+    match kind with
+    | FirstParty | ThirdParty Unregistered ->
+        false
+    | ThirdParty ModelledInternally | ThirdParty (InThirdPartyRepo _) ->
+        true
   in
   let ret_nullability =
     match nullability with
     | AnnotatedNullability.Nullable _ ->
         "nullable"
+    | AnnotatedNullability.ProvisionallyNullable _ ->
+        (* There should not be scenario where this is explained to the end user. *)
+        Logging.die InternalError
+          "get_method_ret_description: Unexpected nullability: ProvisionallyNullable"
     | AnnotatedNullability.ThirdPartyNonnull
     | AnnotatedNullability.UncheckedNonnull _
     | AnnotatedNullability.LocallyTrustedNonnull
@@ -135,12 +148,12 @@ let get_method_ret_description pname call_loc
         "non-nullable"
   in
   let model_info =
-    match model_source with
-    | None ->
+    match kind with
+    | FirstParty | ThirdParty Unregistered ->
         ""
-    | Some InternalModel ->
+    | ThirdParty ModelledInternally ->
         Format.sprintf " (%s according to nullsafe internal models)" ret_nullability
-    | Some (ThirdPartyRepo {filename; line_number}) ->
+    | ThirdParty (InThirdPartyRepo {filename; line_number}) ->
         let filename_to_show =
           ThirdPartyAnnotationGlobalRepo.get_user_friendly_third_party_sig_file_name ~filename
         in
@@ -148,8 +161,39 @@ let get_method_ret_description pname call_loc
           line_number
   in
   Format.sprintf "call to %s%s%s"
-    (Procname.to_simplified_string ~withclass:should_show_class_name pname)
+    (Procname.Java.to_simplified_string ~withclass:should_show_class_name pname)
     (atline call_loc) model_info
+
+
+let get_provisional_annotation = function
+  | NullConst _
+  | NonnullConst _
+  | This
+  | New
+  | ArrayLengthResult
+  | CallToGetKnownToContainsKey
+  | InferredNonnull _
+  | ArrayAccess
+  | OptimisticFallback ->
+      None
+  | Field
+      {field_type= {nullability= AnnotatedNullability.ProvisionallyNullable provisional_annotation}}
+    ->
+      Some provisional_annotation
+  | CurrMethodParameter
+      (Normal
+        { param_annotated_type=
+            {nullability= AnnotatedNullability.ProvisionallyNullable provisional_annotation} }) ->
+      Some provisional_annotation
+  | MethodCall
+      { annotated_signature=
+          { ret=
+              { ret_annotated_type=
+                  {nullability= AnnotatedNullability.ProvisionallyNullable provisional_annotation}
+              } } } ->
+      Some provisional_annotation
+  | Field _ | CurrMethodParameter _ | MethodCall _ ->
+      None
 
 
 let get_description origin =
@@ -181,13 +225,3 @@ let get_description origin =
   (* A technical origin *)
   | OptimisticFallback ->
       None
-
-
-let join o1 o2 =
-  match (o1, o2) with
-  | Field _, (NullConst _ | NonnullConst _ | CurrMethodParameter _ | This | MethodCall _ | New) ->
-      (* low priority to Field, to support field initialization patterns *)
-      o2
-  | _ ->
-      (* left priority *)
-      o1

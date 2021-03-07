@@ -324,7 +324,8 @@ and prune_inter tenv ~positive condition1 condition2 prop =
   let res = ref Propset.empty in
   let pset1 = prune tenv ~positive condition1 prop in
   let do_p p = res := Propset.union (prune tenv ~positive condition2 p) !res in
-  Propset.iter do_p pset1 ; !res
+  Propset.iter do_p pset1 ;
+  !res
 
 
 and prune_union tenv ~positive condition1 condition2 prop =
@@ -344,7 +345,7 @@ let check_inherently_dangerous_function {InterproceduralAnalysis.proc_desc; err_
       Exceptions.Inherently_dangerous_function
         (Localise.desc_inherently_dangerous_function callee_pname)
     in
-    BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning exn
+    BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn
 
 
 let reason_to_skip ~callee_desc : string option =
@@ -409,98 +410,14 @@ let check_arith_norm_exp {InterproceduralAnalysis.proc_desc; err_log; tenv} exp 
           (AnalysisState.get_loc_exn ())
       in
       let exn = Exceptions.Divide_by_zero (desc, __POS__) in
-      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning exn ;
+      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log exn ;
       (Prop.exp_normalize_prop tenv prop exp, prop')
-  | Some (Attribute.UminusUnsigned (e, typ)), prop' ->
-      let desc =
-        Errdesc.explain_unary_minus_applied_to_unsigned_expression tenv e typ
-          (AnalysisState.get_node_exn ()) (AnalysisState.get_loc_exn ())
-      in
-      let exn = Exceptions.Unary_minus_applied_to_unsigned_expression (desc, __POS__) in
-      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning exn ;
+  | Some (Attribute.UminusUnsigned _), prop' | None, prop' ->
       (Prop.exp_normalize_prop tenv prop exp, prop')
-  | None, prop' ->
-      (Prop.exp_normalize_prop tenv prop exp, prop')
-
-
-(** Check if [cond] is testing for NULL a pointer already dereferenced *)
-let check_already_dereferenced {InterproceduralAnalysis.proc_desc; err_log; tenv} cond prop =
-  let find_hpred lhs =
-    List.find
-      ~f:(function Predicates.Hpointsto (e, _, _) -> Exp.equal e lhs | _ -> false)
-      prop.Prop.sigma
-  in
-  let rec is_check_zero = function
-    | Exp.Var id ->
-        Some id
-    | Exp.UnOp (Unop.LNot, e, _) ->
-        is_check_zero e
-    | Exp.BinOp ((Binop.Eq | Binop.Ne), Exp.Const (Const.Cint i), Exp.Var id)
-    | Exp.BinOp ((Binop.Eq | Binop.Ne), Exp.Var id, Exp.Const (Const.Cint i))
-      when IntLit.iszero i ->
-        Some id
-    (* These two patterns appear frequently in Prune nodes *)
-    | Exp.BinOp
-        ( (Binop.Eq | Binop.Ne)
-        , Exp.BinOp (Binop.Eq, Exp.Var id, Exp.Const (Const.Cint i))
-        , Exp.Const (Const.Cint j) )
-    | Exp.BinOp
-        ( (Binop.Eq | Binop.Ne)
-        , Exp.BinOp (Binop.Eq, Exp.Const (Const.Cint i), Exp.Var id)
-        , Exp.Const (Const.Cint j) )
-      when IntLit.iszero i && IntLit.iszero j ->
-        Some id
-    | _ ->
-        None
-  in
-  let dereferenced_line =
-    match is_check_zero cond with
-    | Some id -> (
-      match find_hpred (Prop.exp_normalize_prop tenv prop (Exp.Var id)) with
-      | Some (Predicates.Hpointsto (_, se, _)) -> (
-        match Tabulation.find_dereference_without_null_check_in_sexp se with
-        | Some n ->
-            Some (id, n)
-        | None ->
-            None )
-      | _ ->
-          None )
-    | None ->
-        None
-  in
-  match dereferenced_line with
-  | Some (id, (n, _)) ->
-      let desc =
-        Errdesc.explain_null_test_after_dereference tenv (Exp.Var id)
-          (AnalysisState.get_node_exn ()) n (AnalysisState.get_loc_exn ())
-      in
-      let exn = Exceptions.Null_test_after_dereference (desc, __POS__) in
-      BiabductionReporting.log_issue_deprecated_using_state proc_desc err_log Exceptions.Warning exn
-  | None ->
-      ()
-
-
-(** Check whether symbolic execution de-allocated a stack variable or a constant string, raising an
-    exception in that case *)
-let check_deallocate_static_memory prop_after =
-  let check_deallocated_attribute = function
-    | Predicates.Apred (Aresource ({ra_kind= Rrelease} as ra), [Lvar pv])
-      when Pvar.is_local pv || Pvar.is_global pv ->
-        let freed_desc = Errdesc.explain_deallocate_stack_var pv ra in
-        raise (Exceptions.Deallocate_stack_variable freed_desc)
-    | Predicates.Apred (Aresource ({ra_kind= Rrelease} as ra), [Const (Cstr s)]) ->
-        let freed_desc = Errdesc.explain_deallocate_constant_string s ra in
-        raise (Exceptions.Deallocate_static_memory freed_desc)
-    | _ ->
-        ()
-  in
-  let exp_att_list = Attribute.get_all prop_after in
-  List.iter ~f:check_deallocated_attribute exp_att_list ;
-  prop_after
 
 
 let method_exists right_proc_name methods =
-  if Language.curr_language_is Java then
+  if Language.curr_language_is Java || Language.curr_language_is CIL then
     List.exists ~f:(fun meth_name -> Procname.equal right_proc_name meth_name) methods
   else
     (* ObjC/C++ case : The attribute map will only exist when we have code for the method or
@@ -514,27 +431,7 @@ let method_exists right_proc_name methods =
 
 
 let resolve_method tenv class_name proc_name =
-  let found_class =
-    let visited = ref Typ.Name.Set.empty in
-    let rec resolve (class_name : Typ.Name.t) =
-      visited := Typ.Name.Set.add class_name !visited ;
-      let right_proc_name = Procname.replace_class proc_name class_name in
-      match Tenv.lookup tenv class_name with
-      | Some {methods; supers} when Typ.Name.is_class class_name -> (
-          if method_exists right_proc_name methods then Some right_proc_name
-          else
-            match supers with
-            | super_classname :: _ ->
-                if not (Typ.Name.Set.mem super_classname !visited) then resolve super_classname
-                else None
-            | _ ->
-                None )
-      | _ ->
-          None
-    in
-    resolve class_name
-  in
-  match found_class with
+  match Tenv.resolve_method ~method_exists tenv class_name proc_name with
   | None ->
       Logging.d_printfln "Couldn't find method in the hierarchy of type %s"
         (Typ.Name.name class_name) ;
@@ -577,6 +474,13 @@ let resolve_virtual_pname tenv prop actuals callee_pname call_flags : Procname.t
             Typ.mk (Typ.Tptr (Typ.mk (Tstruct name), Pk_pointer))
         | None ->
             fallback_typ )
+    | Procname.CSharp pname_csharp -> (
+        let name = Procname.CSharp.get_class_type_name pname_csharp in
+        match Tenv.lookup tenv name with
+        | Some _ ->
+            Typ.mk (Typ.Tptr (Typ.mk (Tstruct name), Pk_pointer))
+        | None ->
+            fallback_typ )
     | _ ->
         fallback_typ
   in
@@ -595,7 +499,7 @@ let resolve_virtual_pname tenv prop actuals callee_pname call_flags : Procname.t
       (* if this is not a virtual or interface call, there's no need for resolution *)
       [callee_pname]
   | (receiver_exp, actual_receiver_typ) :: _ ->
-      if not (Language.curr_language_is Java) then
+      if not (Language.curr_language_is Java || Language.curr_language_is CIL) then
         (* default mode for Obj-C/C++/Java virtual calls: resolution only *)
         [do_resolve callee_pname receiver_exp actual_receiver_typ]
       else
@@ -688,67 +592,71 @@ type resolve_and_analyze_result =
 
 (** Resolve the procedure name and run the analysis of the resolved procedure if not already
     analyzed *)
-let resolve_and_analyze
-    {InterproceduralAnalysis.analyze_dependency; analyze_pdesc_dependency; proc_desc; tenv}
-    ?(has_clang_model = false) prop args callee_proc_name call_flags : resolve_and_analyze_result =
-  (* TODO (#15748878): Fix conflict with method overloading by encoding in the procedure name
-     whether the method is defined or generated by the specialization *)
-  let analyze_ondemand resolved_pname =
-    if Procname.equal resolved_pname callee_proc_name then
-      (AnalysisCallbacks.get_proc_desc callee_proc_name, analyze_dependency callee_proc_name)
-    else
-      (* Create the type specialized procedure description and analyze it directly *)
-      let resolved_proc_desc_option =
-        match AnalysisCallbacks.get_proc_desc resolved_pname with
-        | Some _ as resolved_proc_desc ->
-            resolved_proc_desc
-        | None ->
-            let procdesc_opt = AnalysisCallbacks.get_proc_desc callee_proc_name in
-            Option.map procdesc_opt ~f:(fun callee_proc_desc ->
-                (* It is possible that the types of the arguments are not as precise as the type of
-                   the objects in the heap, so we should update them to get the best results. *)
-                let resolved_args = resolve_args prop args in
-                SpecializeProcdesc.with_formals_types ~has_clang_model callee_proc_desc
-                  resolved_pname resolved_args )
-      in
-      ( resolved_proc_desc_option
-      , Option.bind resolved_proc_desc_option ~f:(fun pdesc ->
-            analyze_pdesc_dependency pdesc |> Option.map ~f:(fun summary -> (pdesc, summary)) ) )
-  in
-  let resolved_pname =
-    resolve_pname ~caller_pdesc:proc_desc tenv prop args callee_proc_name call_flags
-  in
-  let resolved_procdesc_opt, resolved_summary_opt = analyze_ondemand resolved_pname in
-  {resolved_pname; resolved_procdesc_opt; resolved_summary_opt}
+let resolve_and_analyze {InterproceduralAnalysis.analyze_dependency; proc_desc; tenv}
+    ~has_clang_model prop args callee_proc_name call_flags : resolve_and_analyze_result =
+  if has_clang_model then
+    {resolved_pname= callee_proc_name; resolved_procdesc_opt= None; resolved_summary_opt= None}
+  else
+    (* TODO (#15748878): Fix conflict with method overloading by encoding in the procedure name
+       whether the method is defined or generated by the specialization *)
+    let analyze_ondemand resolved_pname =
+      if Procname.equal resolved_pname callee_proc_name then
+        (AnalysisCallbacks.get_proc_desc callee_proc_name, analyze_dependency callee_proc_name)
+      else
+        (* Create the type specialized procedure description and analyze it directly *)
+        let resolved_proc_desc_option =
+          match AnalysisCallbacks.get_proc_desc resolved_pname with
+          | Some _ as resolved_proc_desc ->
+              resolved_proc_desc
+          | None ->
+              let procdesc_opt = AnalysisCallbacks.get_proc_desc callee_proc_name in
+              Option.map procdesc_opt ~f:(fun callee_proc_desc ->
+                  (* It is possible that the types of the arguments are not as precise as the type of
+                     the objects in the heap, so we should update them to get the best results. *)
+                  let resolved_args = resolve_args prop args in
+                  SpecializeProcdesc.with_formals_types callee_proc_desc resolved_pname
+                    resolved_args )
+        in
+        ( resolved_proc_desc_option
+        , Option.bind resolved_proc_desc_option ~f:(fun _pdesc ->
+              analyze_dependency resolved_pname ) )
+    in
+    let resolved_pname =
+      resolve_pname ~caller_pdesc:proc_desc tenv prop args callee_proc_name call_flags
+    in
+    let resolved_procdesc_opt, resolved_summary_opt = analyze_ondemand resolved_pname in
+    {resolved_pname; resolved_procdesc_opt; resolved_summary_opt}
 
 
 (** recognize calls to the constructor java.net.URL and splits the argument string to be only the
     protocol. *)
-let call_constructor_url_update_args pname actual_params =
+let call_constructor_url_update_args =
   let url_pname =
     Procname.make_java
       ~class_name:(Typ.Name.Java.from_string "java.net.URL")
       ~return_type:None ~method_name:Procname.Java.constructor_method_name
-      ~parameters:[JavaSplitName.java_lang_string] ~kind:Procname.Java.Non_Static ()
+      ~parameters:[StdTyp.Java.pointer_to_java_lang_string]
+      ~kind:Procname.Java.Non_Static ()
   in
-  if Procname.equal url_pname pname then
-    match actual_params with
-    | [this; (Exp.Const (Const.Cstr s), atype)] -> (
-        let parts = Str.split (Str.regexp_string "://") s in
-        match parts with
-        | frst :: _ ->
-            if
-              String.equal frst "http" || String.equal frst "ftp" || String.equal frst "https"
-              || String.equal frst "mailto" || String.equal frst "jar"
-            then [this; (Exp.Const (Const.Cstr frst), atype)]
-            else actual_params
-        | _ ->
-            actual_params )
-    | [this; (_, atype)] ->
-        [this; (Exp.Const (Const.Cstr "file"), atype)]
-    | _ ->
-        actual_params
-  else actual_params
+  fun pname actual_params ->
+    if Procname.equal url_pname pname then
+      match actual_params with
+      | [this; (Exp.Const (Const.Cstr s), atype)] -> (
+          let parts = Str.split (Str.regexp_string "://") s in
+          match parts with
+          | frst :: _ ->
+              if
+                String.equal frst "http" || String.equal frst "ftp" || String.equal frst "https"
+                || String.equal frst "mailto" || String.equal frst "jar"
+              then [this; (Exp.Const (Const.Cstr frst), atype)]
+              else actual_params
+          | _ ->
+              actual_params )
+      | [this; (_, atype)] ->
+          [this; (Exp.Const (Const.Cstr "file"), atype)]
+      | _ ->
+          actual_params
+    else actual_params
 
 
 let receiver_self receiver prop =
@@ -939,7 +847,10 @@ let add_constraints_on_retval tenv pdesc prop ret_exp ~has_nonnull_annot typ cal
       let prop_with_abduced_var =
         let abduced_ret_pv =
           (* in Java, always re-use the same abduced ret var to prevent false alarms with repeated method calls *)
-          let loc = if Procname.is_java callee_pname then Location.dummy else callee_loc in
+          let loc =
+            if Procname.is_java callee_pname || Procname.is_csharp callee_pname then Location.dummy
+            else callee_loc
+          in
           Pvar.mk_abduced_ret callee_pname loc
         in
         if !BiabductionConfig.footprint then
@@ -1076,10 +987,8 @@ let execute_store ?(report_deref_errors = true) ({InterproceduralAnalysis.tenv; 
 
 
 let is_variadic_procname callee_pname =
-  Option.value_map
-    (AnalysisCallbacks.get_proc_desc callee_pname)
-    ~f:(fun proc_desc -> (Procdesc.get_attributes proc_desc).ProcAttributes.is_variadic)
-    ~default:false
+  Option.exists (AnalysisCallbacks.proc_resolve_attributes callee_pname) ~f:(fun proc_attrs ->
+      proc_attrs.ProcAttributes.is_variadic )
 
 
 let resolve_and_analyze_no_dynamic_dispatch {InterproceduralAnalysis.analyze_dependency; tenv}
@@ -1167,12 +1076,16 @@ let declare_locals_and_ret tenv pdesc (prop_ : Prop.normal Prop.t) =
   prop'
 
 
+let get_closure_opt actual_params =
+  List.find_map actual_params ~f:(fun (exp, _) ->
+      match exp with Exp.Closure c when Procname.is_objc_block c.name -> Some c | _ -> None )
+
+
 (** Execute [instr] with a symbolic heap [prop].*)
 let rec sym_exec
     ( {InterproceduralAnalysis.proc_desc= current_pdesc; analyze_dependency; err_log; tenv} as
     analysis_data ) instr_ (prop_ : Prop.normal Prop.t) path :
     (Prop.normal Prop.t * Paths.Path.t) list =
-  let current_pname = Procdesc.get_proc_name current_pdesc in
   AnalysisState.set_instr instr_ ;
   (* mark instruction last seen *)
   State.set_prop_tenv_pdesc prop_ tenv current_pdesc ;
@@ -1192,8 +1105,17 @@ let rec sym_exec
           | Exp.Closure c ->
               let proc_exp = Exp.Const (Const.Cfun c.name) in
               let proc_exp' = Prop.exp_normalize_prop tenv prop_ proc_exp in
-              let par' = List.map ~f:(fun (id_exp, _, typ) -> (id_exp, typ)) c.captured_vars in
+              let par' = List.map ~f:(fun (id_exp, _, typ, _) -> (id_exp, typ)) c.captured_vars in
               Sil.Call (ret, proc_exp', par' @ par, loc, call_flags)
+          | Exp.Const (Const.Cfun callee_pname) when ObjCDispatchModels.is_model callee_pname -> (
+            match get_closure_opt par with
+            | Some c ->
+                (* We assume that for these modelled functions, the block passed as parameter doesn't
+                   have arguments, so we only pass the captured variables. *)
+                let args = List.map ~f:(fun (id_exp, _, typ, _) -> (id_exp, typ)) c.captured_vars in
+                Sil.Call (ret, Exp.Const (Const.Cfun c.name), args, loc, call_flags)
+            | None ->
+                Sil.Call (ret, exp', par, loc, call_flags) )
           | _ ->
               Sil.Call (ret, exp', par, loc, call_flags)
         in
@@ -1205,8 +1127,7 @@ let rec sym_exec
       ret_id_typ ret_typ actual_args =
     let skip_res () =
       let exn = Exceptions.Skip_function (Localise.desc_skip_function callee_pname) in
-      BiabductionReporting.log_issue_deprecated_using_state current_pdesc err_log Exceptions.Info
-        exn ;
+      BiabductionReporting.log_issue_deprecated_using_state current_pdesc err_log exn ;
       L.d_printfln "Skipping function '%a': %s" Procname.pp callee_pname reason ;
       unknown_or_scan_call ~is_scan:false ~reason ret_typ ret_annots
         { Builtin.instr
@@ -1231,40 +1152,8 @@ let rec sym_exec
       execute_load analysis_data id rhs_exp typ loc prop_ |> ret_old_path
   | Sil.Store {e1= lhs_exp; root_typ= typ; e2= rhs_exp; loc} ->
       execute_store analysis_data lhs_exp typ rhs_exp loc prop_ |> ret_old_path
-  | Sil.Prune (cond, loc, true_branch, ik) ->
+  | Sil.Prune (cond, _, _, _) ->
       let prop__ = Attribute.nullify_exp_with_objc_null tenv prop_ cond in
-      let check_condition_always_true_false () =
-        if (not (Language.curr_language_is Clang)) || Config.report_condition_always_true_in_clang
-        then
-          let report_condition_always_true_false i =
-            let skip_loop =
-              match ik with
-              | Sil.Ik_while | Sil.Ik_for ->
-                  not (IntLit.iszero i) (* skip while(1) and for (;1;) *)
-              | Sil.Ik_dowhile ->
-                  true (* skip do..while *)
-              | Sil.Ik_land_lor ->
-                  true (* skip subpart of a condition obtained from compilation of && and || *)
-              | _ ->
-                  false
-            in
-            true_branch && not skip_loop
-          in
-          match Prop.exp_normalize_prop tenv Prop.prop_emp cond with
-          | Exp.Const (Const.Cint i) when report_condition_always_true_false i ->
-              let node = AnalysisState.get_node_exn () in
-              let desc = Errdesc.explain_condition_always_true_false tenv i cond node loc in
-              let exn =
-                Exceptions.Condition_always_true_false (desc, not (IntLit.iszero i), __POS__)
-              in
-              BiabductionReporting.log_issue_deprecated_using_state current_pdesc err_log
-                Exceptions.Warning exn
-          | _ ->
-              ()
-      in
-      if not (Procname.is_java current_pname) then
-        check_already_dereferenced analysis_data cond prop__ ;
-      check_condition_always_true_false () ;
       let n_cond, prop = check_arith_norm_exp analysis_data cond prop__ in
       ret_old_path (Propset.to_proplist (prune tenv ~positive:true n_cond prop))
   | Sil.Call (ret_id_typ, Exp.Const (Const.Cfun callee_pname), actual_params, loc, call_flags) -> (
@@ -1281,7 +1170,8 @@ let rec sym_exec
               norm_args
           in
           let resolve_and_analyze_result =
-            resolve_and_analyze analysis_data norm_prop norm_args callee_pname call_flags
+            resolve_and_analyze ~has_clang_model:false analysis_data norm_prop norm_args
+              callee_pname call_flags
           in
           let resolved_pname = resolve_and_analyze_result.resolved_pname in
           match resolve_and_analyze_result.resolved_summary_opt with
@@ -1325,96 +1215,88 @@ let rec sym_exec
                   exec_skip_call ~reason ret_annots proc_attrs.ProcAttributes.ret_type )
           in
           List.fold ~f:(fun acc pname -> exec_one_pname pname @ acc) ~init:[] resolved_pnames
-      | _ -> (
+      | CSharp callee_pname_csharp ->
+          let norm_prop, norm_args = normalize_params analysis_data prop_ actual_params in
+          let url_handled_args = call_constructor_url_update_args callee_pname norm_args in
+          let resolved_pnames =
+            resolve_virtual_pname tenv norm_prop url_handled_args callee_pname call_flags
+          in
+          let exec_one_pname pname =
+            let exec_skip_call ~reason ret_annots ret_type =
+              skip_call ~reason norm_prop path pname ret_annots loc ret_id_typ ret_type
+                url_handled_args
+            in
+            match analyze_dependency pname with
+            | None ->
+                let ret_typ = Procname.CSharp.get_return_typ callee_pname_csharp in
+                let ret_annots = load_ret_annots callee_pname in
+                exec_skip_call ~reason:"unknown method" ret_annots ret_typ
+            | Some ((callee_proc_desc, _) as callee_summary) -> (
+              match reason_to_skip ~callee_desc:(`Summary callee_summary) with
+              | None ->
+                  let handled_args = call_args norm_prop pname url_handled_args ret_id_typ loc in
+                  proc_call callee_summary handled_args
+              | Some reason ->
+                  let proc_attrs = Procdesc.get_attributes callee_proc_desc in
+                  let ret_annots = proc_attrs.ProcAttributes.method_annotation.return in
+                  exec_skip_call ~reason ret_annots proc_attrs.ProcAttributes.ret_type )
+          in
+          List.fold ~f:(fun acc pname -> exec_one_pname pname @ acc) ~init:[] resolved_pnames
+      | _ ->
           (* Generic fun call with known name *)
           let prop_r, n_actual_params = normalize_params analysis_data prop_ actual_params in
-          (* method with block parameters *)
-          let with_block_parameters_summary_opt =
-            if call_flags.CallFlags.cf_with_block_parameters then
-              SymExecBlocks.resolve_method_with_block_args_and_analyze analysis_data callee_pname
-                actual_params
-            else None
+          let resolve_and_analyze_result =
+            resolve_and_analyze_clang analysis_data prop_r n_actual_params callee_pname call_flags
           in
-          match with_block_parameters_summary_opt with
-          | Some (resolved_summary, extended_actual_params) ->
-              let prop_r, n_extended_actual_params =
-                normalize_params analysis_data prop_r extended_actual_params
-              in
-              Logging.d_strln "Calling method specialized with blocks... " ;
-              proc_call resolved_summary
-                (call_args prop_r callee_pname n_extended_actual_params ret_id_typ loc)
-          | None ->
-              (* Generic fun call with known name *)
-              let resolve_and_analyze_result =
-                resolve_and_analyze_clang analysis_data prop_r n_actual_params callee_pname
-                  call_flags
-              in
-              let resolved_pname = resolve_and_analyze_result.resolved_pname in
-              let resolved_pdesc_opt = resolve_and_analyze_result.resolved_procdesc_opt in
-              let resolved_summary_opt = resolve_and_analyze_result.resolved_summary_opt in
-              Logging.d_printfln "Original callee %s" (Procname.to_unique_id callee_pname) ;
-              Logging.d_printfln "Resolved callee %s" (Procname.to_unique_id resolved_pname) ;
-              let sentinel_result =
-                if Language.curr_language_is Clang then
-                  check_variadic_sentinel_if_present
-                    (call_args prop_r resolved_pname actual_params ret_id_typ loc)
-                else [(prop_r, path)]
-              in
-              let do_call (prop, path) =
-                let callee_desc =
-                  match (resolved_summary_opt, resolved_pdesc_opt) with
-                  | Some summary, _ ->
-                      `Summary summary
-                  | None, Some pdesc ->
-                      `ProcDesc pdesc
-                  | None, None ->
-                      `ProcName resolved_pname
+          let resolved_pname = resolve_and_analyze_result.resolved_pname in
+          let resolved_pdesc_opt = resolve_and_analyze_result.resolved_procdesc_opt in
+          let resolved_summary_opt = resolve_and_analyze_result.resolved_summary_opt in
+          Logging.d_printfln "Original callee %s" (Procname.to_unique_id callee_pname) ;
+          Logging.d_printfln "Resolved callee %s" (Procname.to_unique_id resolved_pname) ;
+          let sentinel_result =
+            if Language.curr_language_is Clang then
+              check_variadic_sentinel_if_present
+                (call_args prop_r resolved_pname actual_params ret_id_typ loc)
+            else [(prop_r, path)]
+          in
+          let do_call (prop, path) =
+            let callee_desc =
+              match (resolved_summary_opt, resolved_pdesc_opt) with
+              | Some summary, _ ->
+                  `Summary summary
+              | None, Some pdesc ->
+                  `ProcDesc pdesc
+              | None, None ->
+                  `ProcName resolved_pname
+            in
+            match reason_to_skip ~callee_desc with
+            | Some reason -> (
+                let ret_annots =
+                  match resolved_summary_opt with
+                  | Some (proc_desc, _) ->
+                      (Procdesc.get_attributes proc_desc).ProcAttributes.method_annotation.return
+                  | None ->
+                      load_ret_annots resolved_pname
                 in
-                match reason_to_skip ~callee_desc with
-                | Some reason -> (
-                    let ret_annots =
-                      match resolved_summary_opt with
-                      | Some (proc_desc, _) ->
-                          (Procdesc.get_attributes proc_desc).ProcAttributes.method_annotation
-                            .return
-                      | None ->
-                          load_ret_annots resolved_pname
+                match resolved_pdesc_opt with
+                | Some resolved_pdesc ->
+                    let attrs = Procdesc.get_attributes resolved_pdesc in
+                    let ret_type = attrs.ProcAttributes.ret_type in
+                    let is_objc_instance_method =
+                      ClangMethodKind.equal attrs.ProcAttributes.clang_method_kind
+                        ClangMethodKind.OBJC_INSTANCE
                     in
-                    match resolved_pdesc_opt with
-                    | Some resolved_pdesc -> (
-                        let attrs = Procdesc.get_attributes resolved_pdesc in
-                        let ret_type = attrs.ProcAttributes.ret_type in
-                        let model_as_malloc ret_type resolved_pname =
-                          Objc_models.is_malloc_model ret_type resolved_pname
-                        in
-                        match attrs.ProcAttributes.objc_accessor with
-                        | Some objc_accessor ->
-                            (* If it's an ObjC getter or setter, call the builtin rather than skipping *)
-                            handle_objc_instance_method_call n_actual_params prop tenv
-                              (fst ret_id_typ) current_pdesc resolved_pname path (fun () ->
-                                sym_exec_objc_accessor resolved_pname objc_accessor ret_type
-                                  (fst ret_id_typ) analysis_data callee_pname loc n_actual_params
-                                  prop path )
-                        | None when model_as_malloc ret_type resolved_pname ->
-                            (* If it's an alloc model, call alloc rather than skipping *)
-                            sym_exec_alloc_model analysis_data resolved_pname ret_type ret_id_typ
-                              loc prop path
-                        | _ ->
-                            let is_objc_instance_method =
-                              ClangMethodKind.equal attrs.ProcAttributes.clang_method_kind
-                                ClangMethodKind.OBJC_INSTANCE
-                            in
-                            skip_call ~is_objc_instance_method ~reason prop path resolved_pname
-                              ret_annots loc ret_id_typ ret_type n_actual_params )
-                    | None ->
-                        skip_call ~reason prop path resolved_pname ret_annots loc ret_id_typ
-                          (snd ret_id_typ) n_actual_params )
+                    skip_call ~is_objc_instance_method ~reason prop path resolved_pname ret_annots
+                      loc ret_id_typ ret_type n_actual_params
                 | None ->
-                    proc_call
-                      (Option.value_exn resolved_summary_opt)
-                      (call_args prop resolved_pname n_actual_params ret_id_typ loc)
-              in
-              List.concat_map ~f:do_call sentinel_result ) ) )
+                    skip_call ~reason prop path resolved_pname ret_annots loc ret_id_typ
+                      (snd ret_id_typ) n_actual_params )
+            | None ->
+                proc_call
+                  (Option.value_exn resolved_summary_opt)
+                  (call_args prop resolved_pname n_actual_params ret_id_typ loc)
+          in
+          List.concat_map ~f:do_call sentinel_result ) )
   | Sil.Call (ret_id_typ, fun_exp, actual_params, loc, call_flags) ->
       (* Call via function pointer *)
       let prop_r, n_actual_params = normalize_params analysis_data prop_ actual_params in
@@ -1495,7 +1377,7 @@ and instrs ?(mask_errors = false) analysis_data instrs ppl =
             ""
       in
       L.d_warning
-        (F.sprintf "Generated Instruction Failed with: %s%s" error.name.IssueType.unique_id loc) ;
+        (F.sprintf "Generated Instruction Failed with: %s%s" error.issue_type.unique_id loc) ;
       L.d_ln () ;
       [(p, path)]
   in
@@ -1626,6 +1508,9 @@ and unknown_or_scan_call ~is_scan ~reason ret_typ ret_annots
     | Java _ ->
         (* FIXME (T19882766): we need to disable this for Java because it breaks too many tests *)
         false
+    | CSharp _ ->
+        (* FIXME (T19882766): we need to disable this for Java because it breaks too many tests *)
+        false
     | ObjC_Cpp cpp_name ->
         (* FIXME: we need to work around a frontend hack for std::shared_ptr
          * to silent some of the uninitialization warnings *)
@@ -1653,7 +1538,11 @@ and unknown_or_scan_call ~is_scan ~reason ret_typ ret_annots
   let has_nonnull_annot = Annotations.ia_is_nonnull ret_annots in
   let pre_final =
     (* in Java, assume that skip functions close resources passed as params *)
-    let pre_1 = if Procname.is_java callee_pname then remove_file_attribute pre else pre in
+    let pre_1 =
+      if Procname.is_java callee_pname || Procname.is_csharp callee_pname then
+        remove_file_attribute pre
+      else pre
+    in
     let pre_2 =
       (* TODO(jjb): Should this use the type of ret_id, or ret_type from the procedure type? *)
       add_constraints_on_retval tenv proc_desc pre_1
@@ -1728,74 +1617,6 @@ and check_variadic_sentinel_if_present ({Builtin.prop_; path; proc_name} as buil
         [(prop_, path)] )
   | None ->
       [(prop_, path)]
-
-
-and sym_exec_objc_getter field ret_typ ret_id ({InterproceduralAnalysis.tenv; _} as analysis_data)
-    loc args prop =
-  let field_name, _, _ = field in
-  L.d_printfln "No custom getter found. Executing the ObjC builtin getter with ivar %a."
-    Fieldname.pp field_name ;
-  match args with
-  | [ ( lexp
-      , ( ({Typ.desc= Tstruct struct_name} as typ)
-        | {desc= Tptr (({desc= Tstruct struct_name} as typ), _)} ) ) ] ->
-      Tenv.add_field tenv struct_name field ;
-      let field_access_exp = Exp.Lfield (lexp, field_name, typ) in
-      execute_load ~report_deref_errors:false analysis_data ret_id field_access_exp ret_typ loc prop
-  | _ ->
-      raise (Exceptions.Wrong_argument_number __POS__)
-
-
-and sym_exec_objc_setter field _ _ ({InterproceduralAnalysis.tenv; _} as analysis_data) loc args
-    prop =
-  let field_name, _, _ = field in
-  L.d_printfln "No custom setter found. Executing the ObjC builtin setter with ivar %a."
-    Fieldname.pp field_name ;
-  match args with
-  | ( lexp1
-    , ( ({Typ.desc= Tstruct struct_name} as typ1)
-      | {Typ.desc= Tptr (({Typ.desc= Tstruct struct_name} as typ1), _)} ) )
-    :: (lexp2, typ2) :: _ ->
-      Tenv.add_field tenv struct_name field ;
-      let field_access_exp = Exp.Lfield (lexp1, field_name, typ1) in
-      execute_store ~report_deref_errors:false analysis_data field_access_exp typ2 lexp2 loc prop
-  | _ ->
-      raise (Exceptions.Wrong_argument_number __POS__)
-
-
-and sym_exec_objc_accessor callee_pname property_accesor ret_typ ret_id analysis_data _ loc args
-    prop path : Builtin.ret_typ =
-  let f_accessor =
-    match property_accesor with
-    | ProcAttributes.Objc_getter field ->
-        sym_exec_objc_getter field
-    | ProcAttributes.Objc_setter field ->
-        sym_exec_objc_setter field
-  in
-  (* we want to execute in the context of the current procedure, not in the context of callee_pname,
-     since this is the procname of the setter/getter method *)
-  let path_description =
-    F.sprintf "Executing synthesized %s %s"
-      (ProcAttributes.kind_of_objc_accessor_type property_accesor)
-      (Procname.to_simplified_string callee_pname)
-  in
-  let path = Paths.Path.add_description path path_description in
-  f_accessor ret_typ ret_id analysis_data loc args prop |> List.map ~f:(fun p -> (p, path))
-
-
-and sym_exec_alloc_model analysis_data pname ret_typ ret_id_typ loc prop path : Builtin.ret_typ =
-  let alloc_source_function_arg = (Exp.Const (Const.Cfun pname), Typ.void) in
-  let args =
-    let sizeof_exp =
-      Exp.Sizeof {typ= ret_typ; nbytes= None; dynamic_length= None; subtype= Subtype.exact}
-    in
-    let exp = (sizeof_exp, Typ.mk (Tint Typ.IULong)) in
-    [exp; alloc_source_function_arg]
-  in
-  let alloc_fun = Exp.Const (Const.Cfun BuiltinDecl.malloc_no_fail) in
-  let alloc_instr = Sil.Call (ret_id_typ, alloc_fun, args, loc, CallFlags.default) in
-  L.d_strln "No spec found, method should be model as alloc, executing alloc... " ;
-  instrs analysis_data (Instrs.singleton alloc_instr) [(prop, path)]
 
 
 (** Perform symbolic execution for a function call *)
@@ -1916,7 +1737,7 @@ and sym_exec_wrapper ({InterproceduralAnalysis.tenv; _} as analysis_data) handle
           (* but force them into either branch *)
           p'
       | _ ->
-          check_deallocate_static_memory (Abs.abstract_junk analysis_data p')
+          Abs.abstract_junk analysis_data p'
     in
     L.d_str "Instruction " ;
     Sil.d_instr instr ;

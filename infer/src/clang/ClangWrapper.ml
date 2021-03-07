@@ -6,10 +6,6 @@
  *)
 
 open! IStd
-(** Given a clang command, normalize it via `clang -###` if needed to get a clear view of what work
-    is being done and which source files are being compiled, if any, then replace compilation
-    commands by our own clang with our plugin attached for each source file. *)
-
 module L = Logging
 
 type action_item =
@@ -155,7 +151,7 @@ let exec_action_item ~prog ~args = function
       Capture.capture clang_cmd
   | DriverCommand clang_cmd ->
       if
-        Config.skip_analysis_in_path_skips_compilation
+        (not Config.skip_non_capture_clang_commands)
         || Option.exists Config.buck_mode ~f:BuckMode.is_clang_compilation_db
       then Capture.run_clang clang_cmd Utils.echo_in
       else

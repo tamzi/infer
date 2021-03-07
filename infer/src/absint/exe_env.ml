@@ -14,63 +14,47 @@ module F = Format
 
 module L = Logging
 
-(** per-file data: type environment and cfg *)
-type file_data =
-  { source: SourceFile.t
-  ; mutable tenv: Tenv.t option
-  ; mutable integer_type_widths: Typ.IntegerWidths.t option }
+(** per-file data: type environment and integer widths *)
+type file_data = {tenv: Tenv.t option Lazy.t; integer_type_widths: Typ.IntegerWidths.t option Lazy.t}
 
 (** create a new file_data *)
 let new_file_data source =
-  (* Do not fill in tenv and cfg as they can be quite large. This makes calls to fork() cheaper
-     until we start filling out these fields. *)
-  {source; tenv= None (* Sil.load_tenv_from_file tenv_file *); integer_type_widths= None}
+  { tenv= lazy (Tenv.load source)
+  ; integer_type_widths=
+      lazy (Option.first_some (Typ.IntegerWidths.load source) (Some Typ.IntegerWidths.java)) }
 
 
-let create_file_data table source =
-  match SourceFile.Hash.find table source with
-  | file_data ->
+type t = {proc_map: SourceFile.t Procname.Hash.t; file_map: file_data SourceFile.Hash.t}
+
+let file_data_of_source {file_map} source =
+  match SourceFile.Hash.find_opt file_map source with
+  | Some file_data ->
       file_data
-  | exception Caml.Not_found ->
+  | None ->
       let file_data = new_file_data source in
-      SourceFile.Hash.add table source file_data ;
+      SourceFile.Hash.add file_map source file_data ;
       file_data
 
-
-type t =
-  { proc_map: file_data Procname.Hash.t  (** map from procedure name to file data *)
-  ; file_map: file_data SourceFile.Hash.t  (** map from source files to file data *) }
 
 let get_file_data exe_env pname =
-  try Some (Procname.Hash.find exe_env.proc_map pname)
-  with Caml.Not_found ->
-    let source_file_opt =
-      match Attributes.load pname with
-      | None ->
-          L.debug Analysis Medium "can't find attributes for %a@." Procname.pp pname ;
-          None
-      | Some proc_attributes ->
-          Some proc_attributes.ProcAttributes.translation_unit
-    in
-    let get_file_data_for_source source_file =
-      let file_data = create_file_data exe_env.file_map source_file in
-      Procname.Hash.replace exe_env.proc_map pname file_data ;
-      file_data
-    in
-    Option.map ~f:get_file_data_for_source source_file_opt
+  match Procname.Hash.find_opt exe_env.proc_map pname with
+  | Some source ->
+      Some (file_data_of_source exe_env source)
+  | None -> (
+    match Attributes.load pname with
+    | None ->
+        L.debug Analysis Medium "can't find attributes for %a@." Procname.pp pname ;
+        None
+    | Some proc_attributes ->
+        let source_file = proc_attributes.ProcAttributes.translation_unit in
+        let file_data = file_data_of_source exe_env source_file in
+        Procname.Hash.add exe_env.proc_map pname source_file ;
+        Some file_data )
 
 
-let file_data_to_tenv file_data =
-  if is_none file_data.tenv then file_data.tenv <- Tenv.load file_data.source ;
-  file_data.tenv
+let file_data_to_tenv file_data = Lazy.force file_data.tenv
 
-
-let file_data_to_integer_type_widths file_data =
-  if is_none file_data.integer_type_widths then
-    file_data.integer_type_widths <-
-      Option.first_some (Typ.IntegerWidths.load file_data.source) (Some Typ.IntegerWidths.java) ;
-  file_data.integer_type_widths
-
+let file_data_to_integer_type_widths file_data = Lazy.force file_data.integer_type_widths
 
 let java_global_tenv =
   lazy
@@ -117,9 +101,17 @@ let get_column_value ~value_on_java ~file_data_to_value ~column_name exe_env pro
 
 
 (** return the type environment associated to the procedure *)
-let get_tenv =
+let get_proc_tenv =
   get_column_value ~value_on_java:java_global_tenv ~file_data_to_value:file_data_to_tenv
     ~column_name:"tenv"
+
+
+let get_sourcefile_tenv exe_env sourcefile =
+  match file_data_of_source exe_env sourcefile |> file_data_to_tenv with
+  | Some tenv ->
+      tenv
+  | None ->
+      L.die InternalError "get_sourcefile_tenv: tenv not found for %a" SourceFile.pp sourcefile
 
 
 (** return the integer type widths associated to the procedure *)

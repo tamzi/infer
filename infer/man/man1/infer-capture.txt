@@ -111,6 +111,13 @@ OPTIONS
            SQLite page size in bytes, must be a power of two between 512 and
            65536.
 
+       --workspace path
+           Specifies the root of the workspace, which is a directory
+           containing --project-root. This can be needed if the capture phase
+           is expected to require several different project roots, all
+           relative to a common workspace. Usually a single project root is
+           enough, though.
+
        --  Stop argument processing, use remaining arguments as a build
            command
 BUCK OPTIONS
@@ -135,9 +142,19 @@ BUCK OPTIONS
            Depth of dependencies used by the --buck-compilation-database deps
            option. By default, all recursive dependencies are captured.
 
-       --buck-java
-           Activates: Buck integration for Java targets. (Conversely:
-           --no-buck-java)
+       --buck-java-flavor
+           Activates: Buck integration for Java which uses the buck flavor
+           #infer-java-capture instead of genrules like buck-java.
+           (Conversely: --no-buck-java-flavor)
+
+       --buck-java-flavor-suppress-config
+           Activates: Suppress setting buck config values for the infer
+           binary and its version in the buck-java-flavor integration.
+           (Conversely: --no-buck-java-flavor-suppress-config)
+
+       --buck-java-heap-size-gb int
+           Explicitly set the size of the Java heap of Buck processes, in
+           gigabytes.
 
        --buck-merge-all-deps
            Activates: Find and merge all infer dependencies produced by buck.
@@ -169,14 +186,6 @@ CLANG LINTERS OPTIONS
        --no-default-linters
            Deactivates: Use the default linters for the analysis.
            (Conversely: --default-linters)
-
-       --iphoneos-target-sdk-version string
-           Specify the target SDK version to use for iphoneos
-
-       --iphoneos-target-sdk-version-path-regex +string
-           To pass a specific target SDK version to use for iphoneos in a
-           particular path, with the format path:version (can be specified
-           multiple times)
 
        --linter string
            From the linters available, only run this one linter. (Useful
@@ -210,7 +219,9 @@ CLANG LINTERS OPTIONS
            --no-linters-validate-syntax-only)
 CLANG OPTIONS
        --clang-biniou-file file
-           Specify a file containing the AST of the program, in biniou format
+           Specify a file containing the AST of the program, in biniou
+           format. Please note you still need to provide a compilation
+           command.
 
        --clang-blacklisted-flags +string
            Clang flags to filter out
@@ -223,6 +234,11 @@ CLANG OPTIONS
            arrays) is not done element by element but using a builtin
            function that each analysis has to model.
 
+       --clang-yojson-file file
+           Specify a file containing the AST of the program, in yojson
+           format. Please note you still need to provide a compilation
+           command.
+
        --compilation-database +path
            File that contain compilation commands (can be specified multiple
            times)
@@ -231,11 +247,6 @@ CLANG OPTIONS
            File that contain compilation commands where all entries are
            escaped for the shell, eg coming from Xcode (can be specified
            multiple times)
-
-       --compute-analytics
-           Activates: Emit analytics as info-level issues, like component kit
-           line count and component kit file cyclomatic complexity
-           (Conversely: --no-compute-analytics)
 
        --no-cxx
            Deactivates: Analyze C++ methods (Conversely: --cxx)
@@ -251,6 +262,10 @@ CLANG OPTIONS
 
        --headers
            Activates: Analyze code in header files (Conversely: --no-headers)
+
+       --skip-non-capture-clang-commands
+           Activates: Skip clang commands that Infer doesn't use to capture
+           data (Conversely: --no-skip-non-capture-clang-commands)
 
        --skip-translation-headers +path_prefix
            Ignore headers whose path matches the given prefix

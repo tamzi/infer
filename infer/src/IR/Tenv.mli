@@ -40,6 +40,7 @@ val mk_struct :
   -> ?methods:Procname.t list
   -> ?exported_objc_methods:Procname.t list
   -> ?supers:Typ.Name.t list
+  -> ?objc_protocols:Typ.Name.t list
   -> ?annots:Annot.Item.t
   -> ?java_class_info:Struct.java_class_info
   -> ?dummy:bool
@@ -50,13 +51,12 @@ val mk_struct :
 val add_field : t -> Typ.Name.t -> Struct.field -> unit
 (** Add a field to a given struct in the global type environment. *)
 
-val pp : Format.formatter -> t -> unit [@@warning "-32"]
+val pp : Format.formatter -> t -> unit
 (** print a type environment *)
 
 type per_file = Global | FileLocal of t
 
 val pp_per_file : Format.formatter -> per_file -> unit
-  [@@warning "-32"]
 (** print per file type environment *)
 
 val merge : src:t -> dst:t -> unit
@@ -66,22 +66,15 @@ val merge_per_file : src:per_file -> dst:per_file -> per_file
 (** Best-effort merge of [src] into [dst]. If a procedure is both in [dst] and [src], the one in
     [dst] will get overwritten. *)
 
-val get_summary_formals :
-     t
-  -> get_summary:(Procname.t -> 'summary option)
-  -> get_formals:(Procname.t -> 'formals option)
+val resolve_method :
+     method_exists:(Procname.t -> Procname.t list -> bool)
+  -> t
+  -> Typ.Name.t
   -> Procname.t
-  -> [ `NotFound
-     | `Found of 'summary * 'formals
-     | `FoundFromSubclass of Procname.t * 'summary * 'formals ]
-(** Get summary and formals of the given proc name with heuristics for finding a method in
-    non-abstract sub-classes
-
-    - If the class is an interface: Find its unique sub-class and apply the heuristics recursively.
-
-    - If the class is an abstract class: Find/use its own summary if possible. If not found, find
-      one (arbitrary but deterministic) summary from its sub-classes.
-
-    - Otherwise: Find its own summary. *)
+  -> Procname.t option
+(** [resolve_method ~method_exists tenv class_name procname] tries to resolve [procname] to a method
+    in [class_name] or its super-classes, that is non-virtual (non-Java-interface method).
+    [method_exists adapted_procname methods] should check if [adapted_procname] ([procname] but with
+    its class potentially changed to some [other_class]) is among the [methods] of [other_class]. *)
 
 module SQLite : SqliteUtils.Data with type t = per_file

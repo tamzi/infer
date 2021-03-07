@@ -18,27 +18,21 @@ module SymbolPath : sig
   type deref_kind = Deref_ArrayIndex | Deref_COneValuePointer | Deref_CPointer | Deref_JavaPointer
   [@@deriving compare]
 
-  type partial = private
+  type prim =
     | Pvar of Pvar.t
     | Deref of deref_kind * partial
-    | Field of {fn: Fieldname.t; prefix: partial; typ: Typ.t option}
-    | Callsite of {ret_typ: Typ.t; cs: CallSite.t; obj_path: partial option}
+    | Callsite of {ret_typ: Typ.t; cs: CallSite.t; obj_path: partial option [@compare.ignore]}
         (** [obj_path] represents the varaible name object when a method of which is called at the
             [cs] callsite. *)
-    | StarField of {last_field: Fieldname.t; prefix: partial}
-        (** Represents a path starting with [prefix] and ending with the field [last_field], the
-            middle can be anything. Invariants:
-
-            - There is at most one StarField
-            - StarField excluded, there are no duplicate fieldnames
-            - StarField can only be followed by Deref elements *)
   [@@deriving compare]
+
+  and partial = prim BufferOverrunField.t [@@deriving compare]
 
   type t = private
     | Normal of partial
     | Offset of {p: partial; is_void: bool}
     | Length of {p: partial; is_void: bool}
-    | Modeled of {p: partial; is_expensive: bool}
+    | Modeled of partial
   [@@deriving equal]
 
   val equal_partial : partial -> partial -> bool
@@ -55,9 +49,9 @@ module SymbolPath : sig
 
   val deref : deref_kind:deref_kind -> partial -> partial
 
-  val field : ?typ:Typ.t -> partial -> Fieldname.t -> partial
+  val append_field : ?typ:Typ.t -> partial -> Fieldname.t -> partial
 
-  val star_field : partial -> Fieldname.t -> partial
+  val append_star_field : partial -> Fieldname.t -> partial
 
   val normal : partial -> t
 
@@ -65,11 +59,9 @@ module SymbolPath : sig
 
   val length : partial -> is_void:bool -> t
 
-  val modeled : partial -> is_expensive:bool -> t
+  val modeled : partial -> t
 
   val is_this : partial -> bool
-
-  val is_request : partial -> bool
 
   val get_pvar : partial -> Pvar.t option
 
@@ -89,7 +81,7 @@ module SymbolPath : sig
 
   val is_global_partial : partial -> bool
 
-  val is_field_depth_beyond_limit : int -> bool
+  val is_length : t -> bool
 end
 
 module Symbol : sig
@@ -104,6 +96,8 @@ module Symbol : sig
   val is_non_int : t -> bool
 
   val is_global : t -> bool
+
+  val is_length : t -> bool
 
   val pp_mark : markup:bool -> F.formatter -> t -> unit
 
@@ -142,5 +136,3 @@ module SymbolMap : sig
 
   val for_all2 : f:(key -> 'a option -> 'b option -> bool) -> 'a t -> 'b t -> bool
 end
-
-module SymbolPathSet : PrettyPrintable.PPSet with type elt = SymbolPath.partial

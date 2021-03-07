@@ -206,7 +206,9 @@ let d_pi_sigma pi sigma =
   let d_separator () =
     if (not (List.is_empty pi)) && not (List.is_empty sigma) then L.d_strln " *"
   in
-  d_pi pi ; d_separator () ; d_sigma sigma
+  d_pi pi ;
+  d_separator () ;
+  d_sigma sigma
 
 
 let pi_of_subst sub =
@@ -539,7 +541,8 @@ let sigma_get_unsigned_exps sigma =
     | _ ->
         ()
   in
-  List.iter ~f:do_hpred sigma ; !uexps
+  List.iter ~f:do_hpred sigma ;
+  !uexps
 
 
 (** Collapse consecutive indices that should be added. For instance, this function reduces
@@ -670,7 +673,7 @@ module Normalize = struct
           e
       | Closure c ->
           let captured_vars =
-            List.map ~f:(fun (exp, pvar, typ) -> (eval exp, pvar, typ)) c.captured_vars
+            List.map ~f:(fun (exp, pvar, typ, mode) -> (eval exp, pvar, typ, mode)) c.captured_vars
           in
           Closure {c with captured_vars}
       | Const _ ->
@@ -1396,12 +1399,12 @@ module Normalize = struct
         match (hpred : Predicates.hpred) with
         | Hpointsto (Exp.Lvar var, Eexp (Exp.Var id, _), _) ->
             IList.map_changed ~equal:phys_equal
-              ~f:(fun ((e_captured, var_captured, t) as captured_item) ->
+              ~f:(fun ((e_captured, var_captured, t, mode) as captured_item) ->
                 match e_captured with
                 | Exp.Var id_captured ->
                     if Ident.equal id id_captured && Pvar.equal var var_captured then captured_item
-                    else if Ident.equal id id_captured then (e_captured, var, t)
-                    else if Pvar.equal var var_captured then (Exp.Var id, var_captured, t)
+                    else if Ident.equal id id_captured then (e_captured, var, t, mode)
+                    else if Pvar.equal var var_captured then (Exp.Var id, var_captured, t, mode)
                     else captured_item
                 | _ ->
                     captured_item )
@@ -1952,7 +1955,8 @@ let sigma_dfs_sort tenv sigma =
   in
   init () ;
   let sigma' = handle_sigma [] sigma in
-  final () ; sigma'
+  final () ;
+  sigma'
 
 
 let dfs_sort tenv p : sorted t =
@@ -2110,7 +2114,7 @@ let rec exp_captured_ren ren (e : Exp.t) : Exp.t =
       Exn (exp_captured_ren ren e)
   | Closure {name; captured_vars} ->
       let captured_vars' =
-        List.map ~f:(fun (e, v, t) -> (exp_captured_ren ren e, v, t)) captured_vars
+        List.map ~f:(fun (e, v, t, m) -> (exp_captured_ren ren e, v, t, m)) captured_vars
       in
       Closure {name; captured_vars= captured_vars'}
   | Const _ ->

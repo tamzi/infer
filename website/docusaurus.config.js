@@ -22,7 +22,7 @@ module.exports = {
     navbar: {
       title: "Infer",
       logo: { alt: "Infer Logo", src: "img/logo.png" },
-      links: [
+      items: [
         { label: "Docs", to: "docs/getting-started", position: "right" },
         { label: "Support", to: "docs/support", position: "right" },
         { label: "Blog", to: "blog", position: "right" },
@@ -52,7 +52,7 @@ module.exports = {
             { label: "Quick Start", to: "docs/getting-started" },
             { label: "User Guide", to: "docs/infer-workflow" },
             { label: "Foundations", to: "docs/about-Infer" },
-            { label: "Bug Types Reference", to: "docs/checkers-bug-types" },
+            { label: "Bug Types Reference", to: "docs/all-issue-types" },
             { label: "Contribute", to: "docs/absint-framework" },
           ],
         },
@@ -66,11 +66,35 @@ module.exports = {
             { label: "Blog", to: "blog" },
             { label: "GitHub", href: "https://github.com/facebook/infer" },
             { label: "Twitter", href: "https://twitter.com/fbinfer" },
-            { label: "Facebook", href: "https://www.facebook.com/inferstaticanalyzer" },
+            {
+              label: "Facebook",
+              href: "https://www.facebook.com/inferstaticanalyzer",
+            },
+          ],
+        },
+        {
+          title: "Legal",
+          // Please do not remove the privacy and terms, it's a legal requirement.
+          items: [
+            {
+              label: "Privacy",
+              href: "https://opensource.facebook.com/legal/privacy/",
+              target: "_blank",
+              rel: "noreferrer noopener",
+            },
+            {
+              label: "Terms",
+              href: "https://opensource.facebook.com/legal/terms/",
+              target: "_blank",
+              rel: "noreferrer noopener",
+            },
           ],
         },
       ],
       copyright: `Copyright © ${new Date().getFullYear()} Facebook, Inc. Built with Docusaurus.`,
+    },
+    prism: {
+      additionalLanguages: ["java"],
     },
   },
   presets: [

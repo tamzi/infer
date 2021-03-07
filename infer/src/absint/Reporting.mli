@@ -9,10 +9,11 @@ open! IStd
 
 (** Type of functions to report issues to the error_log in a spec. *)
 
-type log_t = ?ltr:Errlog.loc_trace -> ?extras:Jsonbug_t.extra -> IssueType.t -> string -> unit
+type log_t =
+  ?ltr:Errlog.loc_trace -> ?extras:Jsonbug_t.extra -> Checker.t -> IssueType.t -> string -> unit
 
 val log_issue_from_summary :
-     Exceptions.severity
+     ?severity_override:IssueType.severity
   -> Procdesc.t
   -> Errlog.t
   -> node:Errlog.node
@@ -20,37 +21,36 @@ val log_issue_from_summary :
   -> loc:Location.t
   -> ltr:Errlog.loc_trace
   -> ?extras:Jsonbug_t.extra
-  -> exn
+  -> Checker.t
+  -> IssueToReport.t
   -> unit
 
 val log_frontend_issue :
-     Exceptions.severity
-  -> Errlog.t
+     Errlog.t
   -> loc:Location.t
   -> node_key:Procdesc.NodeKey.t
   -> ltr:Errlog.loc_trace
-  -> exn
+  -> IssueToReport.t
   -> unit
 (** Report a frontend issue of a given kind in the given error log. *)
 
-val log_error : Procdesc.t -> Errlog.t -> loc:Location.t -> log_t
-(** Add an error to the given error log. *)
-
-val log_warning : Procdesc.t -> Errlog.t -> loc:Location.t -> log_t
-(** Add a warning to the given error log. *)
+val log_issue : Procdesc.t -> Errlog.t -> loc:Location.t -> log_t
+(** Add an issue to the given error log. *)
 
 val log_issue_external :
      Procname.t
   -> issue_log:IssueLog.t
-  -> Exceptions.severity
+  -> ?severity_override:IssueType.severity
   -> loc:Location.t
   -> ltr:Errlog.loc_trace
   -> ?access:string
   -> ?extras:Jsonbug_t.extra
+  -> Checker.t
   -> IssueType.t
   -> string
   -> IssueLog.t
 (** Log an issue to the error log in [IssueLog] associated with the given procname. *)
 
-val is_suppressed : ?field_name:Fieldname.t option -> Tenv.t -> Procdesc.t -> IssueType.t -> bool
+val is_suppressed :
+  ?field_name:Fieldname.t option -> Tenv.t -> ProcAttributes.t -> IssueType.t -> bool
 (** should an issue report be suppressed due to a [@SuppressLint("issue")] annotation? *)

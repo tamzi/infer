@@ -12,9 +12,25 @@ open! IStd
 
 type violation [@@deriving compare]
 
-val check : lhs:Nullability.t -> rhs:Nullability.t -> (unit, violation) result
+val check : lhs:AnnotatedNullability.t -> rhs:InferredNullability.t -> (unit, violation) result
 (** If `null` can leak from a "less strict" type to "more strict" type, this is an Assignment Rule
     violation. *)
+
+(** Violation that will occur if the provisional annotation becomes real [@Nullable] *)
+module ProvisionalViolation : sig
+  type t
+
+  val offending_annotations : t -> ProvisionalAnnotation.t list
+  (** Non-empty list of corresponding provisional annotations (adding any of those will lead to an
+      issue) *)
+
+  val fix_annotation : t -> ProvisionalAnnotation.t option
+  (** If there is a place such as adding [@Nullable] will fix the issue, this is the one. *)
+
+  val from : violation -> t option
+  (** If the violation is provisional (so is not real but will become real when the annotation is
+      added), create it. *)
+end
 
 (** Violation that needs to be reported to the user. *)
 module ReportableViolation : sig
@@ -27,25 +43,18 @@ module ReportableViolation : sig
   type assignment_type =
     | PassingParamToFunction of function_info
     | AssigningToField of Fieldname.t
-    | ReturningFromFunction of Procname.t
+    | ReturningFromFunction of Procname.Java.t
   [@@deriving compare]
 
   and function_info =
     { param_signature: AnnotatedSignature.param_signature
-    ; model_source: AnnotatedSignature.model_source option
     ; actual_param_expression: string
-    ; param_position: int
-    ; function_procname: Procname.t }
+    ; param_index: int
+    ; annotated_signature: AnnotatedSignature.t
+    ; procname: Procname.Java.t }
 
-  val get_severity : t -> Exceptions.severity
-  (** Severity of the violation to be reported *)
-
-  val get_description :
-       assignment_location:Location.t
-    -> assignment_type
-    -> rhs_origin:TypeOrigin.t
-    -> t
-    -> string * IssueType.t * Location.t
+  val make_nullsafe_issue :
+    assignment_location:Location.t -> assignment_type -> t -> NullsafeIssue.t
   (** Given context around violation, return error message together with the info where to put this
       message *)
 end

@@ -8,20 +8,19 @@
 
 open! IStd
 
-(** Execution environments: basically a cache of where procedures are and what is their type
-    environment *)
+(** Execution environments are a means to get a function's type environment and integer widths and
+    cache those *)
 
-type file_data
-
-type t = private
-  { proc_map: file_data Procname.Hash.t  (** map from procedure name to file data *)
-  ; file_map: file_data SourceFile.Hash.t  (** map from source files to file data *) }
+type t
 
 val mk : unit -> t
 (** Create a new cache *)
 
-val get_tenv : t -> Procname.t -> Tenv.t
+val get_proc_tenv : t -> Procname.t -> Tenv.t
 (** return the type environment associated with the procedure *)
+
+val get_sourcefile_tenv : t -> SourceFile.t -> Tenv.t
+(** return the type environment associated with the source file *)
 
 val load_java_global_tenv : t -> Tenv.t
 (** Load Java type environment (if not done yet), and return it. Useful for accessing type info not

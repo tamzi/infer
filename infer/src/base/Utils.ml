@@ -66,7 +66,8 @@ let read_file fname =
       cleanup () ;
       Ok (List.rev !res)
   | Sys_error error ->
-      cleanup () ; Error error
+      cleanup () ;
+      Error error
 
 
 (** type for files used for printing *)
@@ -89,25 +90,57 @@ let create_outfile fname =
 (** close an outfile *)
 let close_outf outf = Out_channel.close outf.out_c
 
+let normalize_path_from ~root fname =
+  let add_entry (rev_done, rev_root) entry =
+    match (entry, rev_done, rev_root) with
+    | ".", _, _ ->
+        (* path/. --> path *)
+        (rev_done, rev_root)
+    | "..", [], ["/"] | "..", ["/"], _ ->
+        (* /.. -> / *)
+        (rev_done, rev_root)
+    | "..", [], ("." | "..") :: _ | "..", ("." | "..") :: _, _ ->
+        (* id on {.,..}/.. *)
+        (entry :: rev_done, rev_root)
+    | "..", [], _ :: rev_root_parent ->
+        (* eat from the root part if it's not / *)
+        ([], rev_root_parent)
+    | "..", _ :: rev_done_parent, _ ->
+        (* path/dir/.. --> path *)
+        (rev_done_parent, rev_root)
+    | _ ->
+        (entry :: rev_done, rev_root)
+  in
+  let rev_root =
+    (* Remove the leading "." inserted by [Filename.parts] on relative paths. We don't need to do
+       that for [Filename.parts fname] because the "." will go away during normalization in
+       [add_entry]. *)
+    let root_without_leading_dot =
+      match Filename.parts root with "." :: (_ :: _ as rest) -> rest | parts -> parts
+    in
+    List.rev root_without_leading_dot
+  in
+  let rev_result, rev_root = Filename.parts fname |> List.fold ~init:([], rev_root) ~f:add_entry in
+  (* don't use [Filename.of_parts] because it doesn't like empty lists and produces relative paths
+     "./like/this" instead of "like/this" *)
+  let filename_of_rev_parts = function
+    | [] ->
+        "."
+    | _ :: _ as rev_parts ->
+        let parts = List.rev rev_parts in
+        if String.equal (List.hd_exn parts) "/" then
+          "/" ^ String.concat ~sep:Filename.dir_sep (List.tl_exn parts)
+        else String.concat ~sep:Filename.dir_sep parts
+  in
+  (filename_of_rev_parts rev_result, filename_of_rev_parts rev_root)
+
+
+let normalize_path fname = fname |> normalize_path_from ~root:"." |> fst
+
 (** Convert a filename to an absolute one if it is relative, and normalize "." and ".." *)
 let filename_to_absolute ~root fname =
-  let add_entry rev_done entry =
-    match (entry, rev_done) with
-    | ".", [] ->
-        entry :: rev_done (* id on . *)
-    | ".", _ ->
-        rev_done (* path/. --> path *)
-    | "..", ("." | "..") :: _ ->
-        entry :: rev_done (* id on {.,..}/.. *)
-    | "..", ["/"] ->
-        rev_done (* /.. -> / *)
-    | "..", _ :: rev_done_parent ->
-        rev_done_parent (* path/dir/.. --> path *)
-    | _ ->
-        entry :: rev_done
-  in
   let abs_fname = if Filename.is_absolute fname then fname else root ^/ fname in
-  Filename.of_parts (List.rev (List.fold ~f:add_entry ~init:[] (Filename.parts abs_fname)))
+  normalize_path_from ~root:"/" abs_fname |> fst
 
 
 (** Convert an absolute filename to one relative to the given directory. *)
@@ -207,26 +240,6 @@ let with_file_out file ~f =
   try_finally_swallow_timeout ~f ~finally
 
 
-type file_lock =
-  { file: string
-  ; oc: Stdlib.out_channel
-  ; fd: Core.Unix.File_descr.t
-  ; lock: unit -> unit
-  ; unlock: unit -> unit }
-
-let create_file_lock () =
-  let file, oc = Core.Filename.open_temp_file "infer_lock" "" in
-  let fd = Core.Unix.openfile ~mode:[IStd.Unix.O_WRONLY] file in
-  let lock () = Core.Unix.lockf fd ~mode:IStd.Unix.F_LOCK ~len:IStd.Int64.zero in
-  let unlock () = Core.Unix.lockf fd ~mode:IStd.Unix.F_ULOCK ~len:IStd.Int64.zero in
-  {file; oc; fd; lock; unlock}
-
-
-let with_file_lock ~file_lock:{file; oc; fd} ~f =
-  let finally () = Core.Unix.close fd ; Out_channel.close oc ; Core.Unix.remove file in
-  try_finally_swallow_timeout ~f ~finally
-
-
 let with_intermediate_temp_file_out file ~f =
   let temp_filename, temp_oc = Filename.open_temp_file ~in_dir:(Filename.dirname file) "infer" "" in
   let f () = f temp_oc in
@@ -256,7 +269,10 @@ let echo_in chan_in = with_channel_in ~f:print_endline chan_in
 let with_process_in command read =
   let chan = Unix.open_process_in command in
   let f () = read chan in
-  let finally () = consume_in chan ; Unix.close_process_in chan in
+  let finally () =
+    consume_in chan ;
+    Unix.close_process_in chan
+  in
   do_finally_swallow_timeout ~f ~finally
 
 
@@ -310,23 +326,15 @@ let realpath ?(warn_on_error = true) path =
 let devnull = lazy (Unix.openfile "/dev/null" ~mode:[Unix.O_WRONLY])
 
 let suppress_stderr2 f2 x1 x2 =
-  let restore_stderr src = Unix.dup2 ~src ~dst:Unix.stderr ; Unix.close src in
+  let restore_stderr src =
+    Unix.dup2 ~src ~dst:Unix.stderr () ;
+    Unix.close src
+  in
   let orig_stderr = Unix.dup Unix.stderr in
-  Unix.dup2 ~src:(Lazy.force devnull) ~dst:Unix.stderr ;
+  Unix.dup2 ~src:(Lazy.force devnull) ~dst:Unix.stderr () ;
   let f () = f2 x1 x2 in
   let finally () = restore_stderr orig_stderr in
   protect ~f ~finally
-
-
-let compare_versions v1 v2 =
-  let int_list_of_version v =
-    let lv = match String.split ~on:'.' v with [v] -> [v; "0"] | v -> v in
-    let int_of_string_or_zero v = try int_of_string v with Failure _ -> 0 in
-    List.map ~f:int_of_string_or_zero lv
-  in
-  let lv1 = int_list_of_version v1 in
-  let lv2 = int_list_of_version v2 in
-  [%compare: int list] lv1 lv2
 
 
 let rec rmtree name =
@@ -343,7 +351,8 @@ let rec rmtree name =
             then rmtree (name ^/ entry) ;
             rmdir dir
         | None ->
-            Unix.closedir dir ; Unix.rmdir name
+            Unix.closedir dir ;
+            Unix.rmdir name
       in
       rmdir dir
   | _ ->
@@ -468,23 +477,23 @@ let physical_cores () =
       let physical_or_core_regxp =
         Re.Str.regexp "\\(physical id\\|core id\\)[^0-9]+\\([0-9]+\\).*"
       in
-      let rec loop max_socket_id max_core_id =
+      let rec loop sockets cores =
         match In_channel.input_line ~fix_win_eol:true ic with
         | None ->
-            (max_socket_id + 1, max_core_id + 1)
+            (Int.Set.length sockets, Int.Set.length cores)
         | Some line when Re.Str.string_match physical_or_core_regxp line 0 -> (
             let value = Re.Str.matched_group 2 line |> int_of_string in
             match Re.Str.matched_group 1 line with
             | "physical id" ->
-                loop (max value max_socket_id) max_core_id
+                loop (Int.Set.add sockets value) cores
             | "core id" ->
-                loop max_socket_id (max value max_core_id)
+                loop sockets (Int.Set.add cores value)
             | _ ->
                 L.die InternalError "Couldn't parse line '%s' from /proc/cpuinfo." line )
         | Some _ ->
-            loop max_socket_id max_core_id
+            loop sockets cores
       in
-      let sockets, cores_per_socket = loop 0 0 in
+      let sockets, cores_per_socket = loop Int.Set.empty Int.Set.empty in
       sockets * cores_per_socket )
 
 
@@ -505,4 +514,5 @@ let zip_fold_filenames ~init ~f ~zip_filename =
   let file_in = Zip.open_in zip_filename in
   let collect acc (entry : Zip.entry) = f acc entry.filename in
   let result = List.fold ~f:collect ~init (Zip.entries file_in) in
-  Zip.close_in file_in ; result
+  Zip.close_in file_in ;
+  result

@@ -48,9 +48,17 @@ let pp_range f (loc_start, loc_end) =
 
 
 module Map = PrettyPrintable.MakePPMap (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 
   let pp = pp
+end)
+
+module Normalizer = HashNormalizer.Make (struct
+  type nonrec t = t [@@deriving equal]
+
+  let hash = Hashtbl.hash
+
+  let normalize t =
+    let file = SourceFile.Normalizer.normalize t.file in
+    if phys_equal file t.file then t else {t with file}
 end)

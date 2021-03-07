@@ -7,19 +7,23 @@
 
 open! IStd
 
-type t [@@deriving compare, equal]
+type t [@@deriving compare, equal, yojson_of]
 
 module Map : Caml.Map.S with type key = t
 
 module Set : Caml.Set.S with type elt = t
 
 val make : package:string option -> classname:string -> t
+(** [make ~package:(Some "java.lang") "Object"] creates a value representing [java.lang.Object] *)
 
 val from_string : string -> t
+(** [from_string "java.lang.Object"] is same as [make ~package:(Some "java.lang") "Object"] *)
 
 val to_string : t -> string
+(** [to_string (from_string "X.Y.Z") = "X.Y.Z"] *)
 
 val pp : Format.formatter -> t -> unit
+(** [pp] includes package if any *)
 
 val pp_with_verbosity : verbose:bool -> Format.formatter -> t -> unit
 (** if [verbose] then print package if present, otherwise only print class *)
@@ -48,3 +52,5 @@ val get_user_defined_class_if_anonymous_inner : t -> t option
     SomeClass$NestedClass$1$17$5. In this example, we should return SomeClass$NestedClass.
 
     If this is not an anonymous class, returns [None]. *)
+
+module Normalizer : HashNormalizer.S with type t = t

@@ -11,6 +11,7 @@ open! IStd
 open AbsLoc
 open! AbstractDomain.Types
 open BufferOverrunDomain
+module BoField = BufferOverrunField
 module L = Logging
 module TraceSet = BufferOverrunTrace.Set
 
@@ -151,7 +152,7 @@ let rec eval : Typ.IntegerWidths.t -> Exp.t -> Mem.t -> Val.t =
         Mem.find_stack (Var.of_id id |> Loc.of_var) mem
     | Exp.Lvar pvar ->
         let loc = Loc.of_pvar pvar in
-        if Mem.is_stack_loc loc mem then Mem.find loc mem else Val.of_loc loc
+        if Mem.is_stack_loc loc mem || Loc.is_global loc then Mem.find loc mem else Val.of_loc loc
     | Exp.UnOp (uop, e, _) ->
         eval_unop integer_type_widths uop e mem
     | Exp.BinOp (bop, e1, e2) -> (
@@ -303,8 +304,11 @@ let rec eval_arr : Typ.IntegerWidths.t -> Exp.t -> Mem.t -> Val.t =
  fun integer_type_widths exp mem ->
   match exp with
   | Exp.Var id ->
-      let alias_loc = AliasTargets.find_simple_alias (Mem.find_alias_id id mem) in
-      Option.value_map alias_loc ~default:Val.bot ~f:(fun loc -> Mem.find loc mem)
+      let loc =
+        AliasTargets.find_simple_alias (Mem.find_alias_id id mem)
+        |> IOption.value_default_f ~f:(fun () -> Loc.of_id id)
+      in
+      Mem.find loc mem
   | Exp.Lvar pvar ->
       Mem.find (Loc.of_pvar pvar) mem
   | Exp.BinOp (bop, e1, e2) ->
@@ -374,23 +378,23 @@ type eval_mode = EvalNormal | EvalPOCond | EvalPOReachability | EvalCost
 
 let is_cost_mode = function EvalCost -> true | _ -> false
 
-let eval_sympath_modeled_partial ~mode ~is_expensive p =
+let eval_sympath_modeled_partial ~mode p =
   match (mode, p) with
-  | (EvalNormal | EvalCost), Symb.SymbolPath.Callsite _ ->
-      Itv.of_modeled_path ~is_expensive p |> Val.of_itv
+  | (EvalNormal | EvalCost), BoField.Prim (Symb.SymbolPath.Callsite _) ->
+      Itv.of_modeled_path p |> Val.of_itv
   | _, _ ->
-      (* We only have modeled modeled function calls created in costModels. *)
+      (* We only have modeled function calls created in costModels. *)
       assert false
 
 
 let rec eval_sympath_partial ~mode params p mem =
   match p with
-  | Symb.SymbolPath.Pvar x -> (
+  | BoField.Prim (Symb.SymbolPath.Pvar x) -> (
     try ParamBindings.find x params
     with Caml.Not_found ->
       L.d_printfln_escaped "Symbol %a is not found in parameters." (Pvar.pp Pp.text) x ;
       Val.Itv.top )
-  | Symb.SymbolPath.Callsite {ret_typ; cs; obj_path} -> (
+  | BoField.Prim (Symb.SymbolPath.Callsite {ret_typ; cs; obj_path}) -> (
     match mode with
     | EvalNormal | EvalCost ->
         L.d_printfln_escaped "Symbol for %a is not expected to be in parameters." Procname.pp
@@ -404,7 +408,7 @@ let rec eval_sympath_partial ~mode params p mem =
         Mem.find (Loc.of_allocsite (Allocsite.make_symbol p)) mem
     | EvalPOCond | EvalPOReachability ->
         Val.Itv.top )
-  | Symb.SymbolPath.Deref _ | Symb.SymbolPath.Field _ | Symb.SymbolPath.StarField _ ->
+  | BoField.(Prim (Symb.SymbolPath.Deref _) | Field _ | StarField _) ->
       let locs = eval_locpath ~mode params p mem in
       Mem.find_set locs mem
 
@@ -412,16 +416,16 @@ let rec eval_sympath_partial ~mode params p mem =
 and eval_locpath ~mode params p mem =
   let res =
     match p with
-    | Symb.SymbolPath.Pvar _ | Symb.SymbolPath.Callsite _ ->
+    | BoField.Prim (Symb.SymbolPath.Pvar _ | Symb.SymbolPath.Callsite _) ->
         let v = eval_sympath_partial ~mode params p mem in
         Val.get_all_locs v
-    | Symb.SymbolPath.Deref (_, p) ->
+    | BoField.Prim (Symb.SymbolPath.Deref (_, p)) ->
         let v = eval_sympath_partial ~mode params p mem in
         Val.get_all_locs v
-    | Symb.SymbolPath.Field {fn; prefix= p} ->
+    | BoField.Field {fn; prefix= p} ->
         let locs = eval_locpath ~mode params p mem in
         PowLoc.append_field ~fn locs
-    | Symb.SymbolPath.StarField {last_field= fn; prefix} ->
+    | BoField.StarField {last_field= fn; prefix} ->
         let locs = eval_locpath ~mode params prefix mem in
         PowLoc.append_star_field ~fn locs
   in
@@ -437,8 +441,8 @@ and eval_locpath ~mode params p mem =
 
 let eval_sympath ~mode params sympath mem =
   match sympath with
-  | Symb.SymbolPath.Modeled {p; is_expensive} ->
-      let v = eval_sympath_modeled_partial ~mode ~is_expensive p in
+  | Symb.SymbolPath.Modeled p ->
+      let v = eval_sympath_modeled_partial ~mode p in
       (Val.get_itv v, Val.get_traces v)
   | Symb.SymbolPath.Normal p ->
       let v = eval_sympath_partial ~mode params p mem in
@@ -466,7 +470,13 @@ let mk_eval_sym_trace ?(is_params_ref = false) integer_type_widths
                   Mem.find_set (eval_locs a caller_mem) caller_mem )
             in
             this_actual :: actuals
-      else List.map ~f:(fun (a, _) -> eval integer_type_widths a caller_mem) actual_exps
+      else
+        List.map actual_exps ~f:(fun (a, _) ->
+            match (a : Exp.t) with
+            | Closure closure ->
+                FuncPtr.Set.of_closure closure |> Val.of_func_ptrs
+            | _ ->
+                eval integer_type_widths a caller_mem )
     in
     ParamBindings.make callee_formals actuals
   in
@@ -476,28 +486,25 @@ let mk_eval_sym_trace ?(is_params_ref = false) integer_type_widths
     Symb.Symbol.check_bound_end s bound_end ;
     Itv.get_bound itv bound_end
   in
+  let eval_locpath ~mode partial = eval_locpath ~mode params partial caller_mem in
+  let eval_func_ptrs ~mode partial =
+    eval_sympath_partial ~mode params partial caller_mem |> Val.get_func_ptrs
+  in
   let trace_of_sym s =
     let sympath = Symb.Symbol.path s in
     let itv, traces = eval_sympath ~mode:EvalNormal params sympath caller_mem in
     if Itv.eq itv Itv.bot then TraceSet.bottom else traces
   in
-  let eval_locpath ~mode partial = eval_locpath ~mode params partial caller_mem in
-  let eval_taint ~mode path = eval_sympath_partial ~mode params path caller_mem |> Val.get_taint in
   fun ~mode ->
     { eval_sym= eval_sym ~mode
-    ; trace_of_sym
     ; eval_locpath= eval_locpath ~mode
-    ; eval_taint= eval_taint ~mode }
+    ; eval_func_ptrs= eval_func_ptrs ~mode
+    ; trace_of_sym }
 
 
-let mk_eval_sym_mode ~mode integer_type_widths callee_formals actual_exps caller_mem =
-  let eval_sym_trace =
-    mk_eval_sym_trace integer_type_widths callee_formals actual_exps caller_mem ~mode
-  in
-  eval_sym_trace.eval_sym
+let mk_eval_sym_cost integer_type_widths callee_formals actual_exps caller_mem =
+  mk_eval_sym_trace integer_type_widths callee_formals actual_exps caller_mem ~mode:EvalCost
 
-
-let mk_eval_sym_cost = mk_eval_sym_mode ~mode:EvalCost
 
 (* This function evaluates the array length conservatively, which is useful when there are multiple
    array locations and their lengths are joined to top.  For example, if the [arr_locs] points to
@@ -521,6 +528,8 @@ let eval_array_locs_length arr_locs mem =
     | _ ->
         conservative_array_length ~traces arr_locs mem
 
+
+let eval_string_len exp mem = Mem.get_c_strlen (eval_locs exp mem) mem
 
 module Prune = struct
   type t = {prune_pairs: PrunePairs.t; mem: Mem.t}
@@ -568,6 +577,36 @@ module Prune = struct
     AliasTargets.fold accum_pruned (Mem.find_alias_loc iterator mem) astate
 
 
+  let prune_linked_list_index loc mem acc =
+    let lv_linked_list_index = Loc.append_field loc BufferOverrunField.java_linked_list_index in
+    Option.value_map (Mem.find_opt lv_linked_list_index mem) ~default:acc ~f:(fun index_v ->
+        let linked_list_length = Loc.append_field loc BufferOverrunField.java_linked_list_length in
+        Option.value_map (Loc.get_path linked_list_length) ~default:acc
+          ~f:(fun linked_list_length ->
+            let pruned_v =
+              Val.of_itv (Itv.of_normal_path ~unsigned:true linked_list_length)
+              |> Val.prune_binop Le index_v
+            in
+            update_mem_in_prune lv_linked_list_index pruned_v acc ) )
+
+
+  let prune_iterator_offset_objc next_object mem acc =
+    let tgts = Mem.find_alias_loc next_object mem in
+    AliasTargets.fold
+      (fun iterator tgt acc ->
+        match tgt with
+        | AliasTarget.IteratorNextObject _ ->
+            let iterator_v = Mem.find iterator mem in
+            let iterator_v' =
+              { iterator_v with
+                arrayblk= Val.get_array_blk iterator_v |> ArrayBlk.prune_offset_le_size }
+            in
+            update_mem_in_prune iterator iterator_v' acc
+        | _ ->
+            acc )
+      tgts acc
+
+
   let prune_unop : Exp.t -> t -> t =
    fun e ({mem} as astate) ->
     match e with
@@ -575,11 +614,13 @@ module Prune = struct
         let accum_prune_var rhs tgt acc =
           match tgt with
           | AliasTarget.Simple {i} when IntLit.iszero i ->
-              let v = Mem.find rhs mem in
-              if Val.is_bot v then acc
-              else
-                let v' = Val.prune_ne_zero v in
-                update_mem_in_prune rhs v' acc
+              (let v = Mem.find rhs mem in
+               if Val.is_bot v then acc
+               else
+                 let v' = Val.prune_ne_zero v in
+                 update_mem_in_prune rhs v' acc )
+              |> prune_linked_list_index rhs mem
+              |> prune_iterator_offset_objc rhs mem
           | AliasTarget.Empty ->
               let v = Mem.find rhs mem in
               if Val.is_bot v then acc

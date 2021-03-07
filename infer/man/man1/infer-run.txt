@@ -88,6 +88,10 @@ OPTIONS
            Show this manual with all internal options in the INTERNAL OPTIONS
            section
 
+       --pmd-xml
+           Activates: Output issues in (PMD) XML format in
+           infer-out/report.xml (Conversely: --no-pmd-xml)
+
        --print-logs
            Activates: Also log messages to stdout and stderr (Conversely:
            --no-print-logs)
@@ -113,6 +117,10 @@ OPTIONS
        --report-force-relative-path
            Activates: Force converting an absolute path to a relative path to
            the root directory (Conversely: --no-report-force-relative-path)
+
+       --report-immutable-modifications
+           Activates: Report modifications to immutable fields (Conversely:
+           --no-report-immutable-modifications)
 
        --report-suppress-errors +error_name
            do not report a type of errors
@@ -156,11 +164,6 @@ BUCK OPTIONS
        --buck-targets-blacklist +regex
            Skip capture of buck targets matched by the specified regular
            expression. Only valid for --buck-compilation-database.
-CLANG OPTIONS
-       --compute-analytics
-           Activates: Emit analytics as info-level issues, like component kit
-           line count and component kit file cyclomatic complexity
-           (Conversely: --no-compute-analytics)
 JAVA OPTIONS
        --capture-blacklist regex
            Skip capture of files matched by the specified OCaml regular

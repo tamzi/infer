@@ -98,7 +98,10 @@ val context_in_synchronized_block : CLintersContext.context -> bool
 (** true if the current node is in the context of a synchronized objc block *)
 
 val is_ivar_atomic : Ctl_parser_types.ast_node -> bool
-(** [is_ivar_atomic an] is true iff an denotes an atomi objc ivar *)
+(** [is_ivar_atomic an] is true iff an denotes an atomic objc ivar *)
+
+val is_ivar_readonly : Ctl_parser_types.ast_node -> bool
+(** [is_ivar_readonly an] is true iff an denotes a readonly objc ivar *)
 
 val is_method_property_accessor_of_ivar :
   Ctl_parser_types.ast_node -> CLintersContext.context -> bool
@@ -359,12 +362,6 @@ val is_class : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
 
 val pp_predicate : Format.formatter -> t -> unit
 
-val decl_unavailable_in_supported_ios_sdk :
-  CLintersContext.context -> Ctl_parser_types.ast_node -> bool
-
-val class_unavailable_in_supported_ios_sdk :
-  CLintersContext.context -> Ctl_parser_types.ast_node -> bool
-
 val has_type : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
 
 val has_value : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
@@ -372,8 +369,6 @@ val has_value : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
 val method_return_type : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
 
 val has_type_subprotocol_of : Ctl_parser_types.ast_node -> ALVar.alexp -> bool
-
-val get_available_attr_ios_sdk : Ctl_parser_types.ast_node -> string option
 
 val get_selector : Ctl_parser_types.ast_node -> string option
 
@@ -428,10 +423,6 @@ val cxx_construct_expr_has_name : Ctl_parser_types.ast_node -> ALVar.alexp -> bo
 val has_used_attribute : Ctl_parser_types.ast_node -> bool
 
 val has_no_escape_attribute : Ctl_parser_types.ast_node -> bool
-
-val iphoneos_target_sdk_version_by_path : CLintersContext.context -> string option
-
-val iphoneos_target_sdk_version_greater_or_equal : CLintersContext.context -> string -> bool
 
 val within_available_class_block : CLintersContext.context -> Ctl_parser_types.ast_node -> bool
 

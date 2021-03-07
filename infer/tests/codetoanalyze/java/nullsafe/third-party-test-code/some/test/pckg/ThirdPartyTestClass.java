@@ -6,6 +6,7 @@
  */
 package some.test.pckg;
 
+import java.util.List;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
@@ -15,12 +16,19 @@ import javax.annotation.Nullable;
  */
 public class ThirdPartyTestClass {
 
+  // Inner classes
+
   public static class UncheckedLong {
     public long mInner;
 
     public UncheckedLong(long inner) {
       mInner = inner;
     }
+  }
+
+  public enum InnerEnum {
+    EA,
+    EB,
   }
 
   // Fields.
@@ -67,4 +75,29 @@ public class ThirdPartyTestClass {
 
   public void secondParamSpecifiedAsNonnull(
       String specifiedAsNullable, String specifiedAsNonnull) {}
+
+  // Special case: a generic method
+  public <T> T generic(T obj, List<T> list) {
+    return obj;
+  }
+
+  // Special case: a generic method extending String
+  public <T extends String> T genericString(T obj, List<T> list) {
+    return obj;
+  }
+
+  // Special case: an array
+  public String array(String obj, String[] arr) {
+    return obj;
+  }
+
+  // Special case: a variable argument
+  public String vararg(String obj, String... arr) {
+    return obj;
+  }
+
+  // Special case: a variable argument generic
+  public <T> T varargGeneric(T obj, T... arr) {
+    return obj;
+  }
 }

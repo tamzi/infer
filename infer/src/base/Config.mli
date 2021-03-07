@@ -43,15 +43,15 @@ val append_buck_flavors : string list
 
 val assign : string
 
-val biabduction_models_dir : string
+val biabduction_models_sql : string
 
 val biabduction_models_jar : string
-
-val biabduction_models_src_dir : string
 
 val bin_dir : string
 
 val bound_error_allowed_in_procedure_call : bool
+
+val buck_java_flavor_suppress_config : bool
 
 val clang_exe_aliases : string list
 
@@ -114,11 +114,11 @@ val relative_path_backtrack : int
 
 val report : bool
 
-val report_condition_always_true_in_clang : bool
-
 val report_custom_error : bool
 
 val report_force_relative_path : bool
+
+val report_immutable_modifications : bool
 
 val report_nullable_inconsistency : bool
 
@@ -128,17 +128,15 @@ val smt_output : bool
 
 val source_file_extentions : string list
 
+val kotlin_source_extension : string
+
 val sourcepath : string option
 
 val sources : string list
 
-val specs_files_suffix : string
-
 val trace_absarray : bool
 
 val unsafe_unret : string
-
-val use_cost_threshold : bool
 
 val incremental_analysis : bool
 
@@ -152,23 +150,17 @@ val wrappers_dir : string
 
 (** {2 Configuration values specified by command-line options} *)
 
-type iphoneos_target_sdk_version_path_regex = {path: Str.regexp; version: string}
-
 val abs_struct : int
 
 val abs_val : int
 
 val allow_leak : bool
 
-val analysis_stops : bool
-
 val annotation_reachability_cxx : Yojson.Basic.t
 
 val annotation_reachability_cxx_sources : Yojson.Basic.t
 
 val annotation_reachability_custom_pairs : Yojson.Basic.t
-
-val anon_args : string list
 
 val array_level : int
 
@@ -177,8 +169,6 @@ val biabduction_models_mode : bool
 val bo_debug : int
 
 val bo_field_depth_limit : int option
-
-val bo_service_handler_request : bool
 
 val bootclasspath : string option
 
@@ -191,6 +181,8 @@ val buck_build_args : string list
 val buck_build_args_no_inline : string list
 
 val buck_cache_mode : bool
+
+val buck_java_heap_size_gb : int option
 
 val buck_merge_all_deps : bool
 
@@ -206,13 +198,15 @@ val capture : bool
 
 val capture_blacklist : string option
 
+val cfg_json : string option
+
 val censor_report : ((bool * Str.regexp) * (bool * Str.regexp) * string) list
 
 val changed_files_index : string option
 
 val check_version : string option
 
-val clang_biniou_file : string option
+val clang_ast_file : [`Biniou of string | `Yojson of string] option
 
 val clang_compound_literal_init_limit : int
 
@@ -230,11 +224,17 @@ val clang_idirafter_to_override_regex : Str.regexp option
 
 val clang_libcxx_include_to_override_regex : string option
 
-val class_loads_roots : String.Set.t
-
 val command : InferCommand.t
 
-val compute_analytics : bool
+val config_impact_current : string option
+
+val config_impact_data_file : string option
+
+val config_impact_issues_tests : string option
+
+val config_impact_max_callees_to_print : int
+
+val config_impact_previous : string option
 
 val continue_analysis : bool
 
@@ -242,7 +242,15 @@ val continue_capture : bool
 
 val costs_current : string option
 
+val cost_issues_tests : string option
+
+val cost_scuba_logging : bool
+
 val costs_previous : string option
+
+val cost_suppress_func_ptr : bool
+
+val cost_tests_only_autoreleasepool : bool
 
 val cxx : bool
 
@@ -302,6 +310,10 @@ val force_integration : build_system option
 
 val from_json_report : string
 
+val from_json_config_impact_report : string
+
+val from_json_costs_report : string
+
 val frontend_stats : bool
 
 val frontend_tests : bool
@@ -314,9 +326,15 @@ val genrule_mode : bool
 
 val get_linter_doc_url : linter_id:string -> string option
 
+val help_checker : Checker.t list
+
+val help_issue_type : IssueType.t list
+
 val hoisting_report_only_expensive : bool
 
 val html : bool
+
+val global_tenv : bool
 
 val icfg_dotty_outfile : string option
 
@@ -332,10 +350,6 @@ val inferconfig_file : string option
 
 val inferconfig_dir : string option
 
-val iphoneos_target_sdk_version : string option
-
-val iphoneos_target_sdk_version_path_regex : iphoneos_target_sdk_version_path_regex list
-
 val is_checker_enabled : Checker.t -> bool
 
 val issues_tests : string option
@@ -344,7 +358,11 @@ val issues_tests_fields : IssuesTestField.t list
 
 val iterations : int
 
+val java_debug_source_file_info : string option
+
 val java_jar_compiler : string option
+
+val java_source_parser_experimental : bool
 
 val java_version : int option
 
@@ -370,9 +388,19 @@ val linters_ignore_clang_failures : bool
 
 val linters_validate_syntax_only : bool
 
+val list_checkers : bool
+
+val list_issue_types : bool
+
 val liveness_dangerous_classes : Yojson.Basic.t
 
+val liveness_ignored_constant : string list
+
 val max_nesting : int option
+
+val memtrace_analysis : bool
+
+val memtrace_sampling_rate : float
 
 val merge : bool
 
@@ -391,9 +419,11 @@ val no_translate_libs : bool
 
 val nullable_annotation : string option
 
+val nullsafe_annotation_graph : bool
+
 val nullsafe_disable_field_not_initialized_in_nonstrict_classes : bool
 
-val nullsafe_optimistic_third_party_params_in_non_strict : bool
+val nullsafe_optimistic_third_party_in_default_mode : bool
 
 val nullsafe_third_party_signatures : string option
 
@@ -407,11 +437,13 @@ val only_cheap_debug : bool
 
 val only_footprint : bool
 
-val perf_profiler_data_file : string option
+val pmd_xml : bool
 
 val print_active_checkers : bool
 
 val print_builtins : bool
+
+val print_jbir : bool
 
 val print_logs : bool
 
@@ -423,6 +455,8 @@ val procedures : bool
 
 val procedures_attributes : bool
 
+val procedures_cfg : bool
+
 val procedures_definedness : bool
 
 val procedures_filter : string option
@@ -432,6 +466,8 @@ val procedures_name : bool
 val procedures_source_file : bool
 
 val procedures_summary : bool
+
+val procedures_summary_json : bool
 
 val process_clang_ast : bool
 
@@ -443,21 +479,35 @@ val progress_bar : [`MultiLine | `Plain | `Quiet]
 
 val project_root : string
 
-val pudge : bool
-
 val pulse_cut_to_one_path_procedures_pattern : Str.regexp option
-
-val pulse_recency_limit : int
 
 val pulse_intraprocedural_only : bool
 
+val pulse_isl : bool
+
 val pulse_max_disjuncts : int
+
+val pulse_model_abort : string list
 
 val pulse_model_alloc_pattern : Str.regexp option
 
 val pulse_model_release_pattern : Str.regexp option
 
+val pulse_model_return_nonnull : Str.regexp option
+
+val pulse_model_skip_pattern : Str.regexp option
+
+val pulse_model_transfer_ownership_namespace : (string * string) list
+
+val pulse_model_transfer_ownership : string list
+
+val pulse_report_latent_issues : bool
+
+val pulse_recency_limit : int
+
 val pulse_widen_threshold : int
+
+val pulse_nullsafe_report_npe : bool
 
 val pure_by_default : bool
 
@@ -509,7 +559,7 @@ val scuba_tags : string list String.Map.t
 
 val seconds_per_iteration : float option
 
-val select : int option
+val select : [`All | `Select of int] option
 
 val show_buckets : bool
 
@@ -523,9 +573,9 @@ val skip_analysis_in_path_skips_compilation : bool
 
 val skip_duplicated_types : bool
 
-val skip_translation_headers : string list
+val skip_non_capture_clang_commands : bool
 
-val sledge_timers : bool
+val skip_translation_headers : string list
 
 val source_files : bool
 
@@ -549,8 +599,6 @@ val sqlite_lock_timeout : int
 
 val sqlite_vfs : string option
 
-val sqlite_write_daemon : bool
-
 val starvation_skip_analysis : Yojson.Basic.t
 
 val starvation_strict_mode : bool
@@ -561,7 +609,11 @@ val subtype_multirange : bool
 
 val summaries_caches_max_size : int
 
+val suppress_lint_ignore_types : bool
+
 val symops_per_iteration : int option
+
+val tenv_json : string option
 
 val test_determinator : bool
 
@@ -572,6 +624,10 @@ val test_filtering : bool
 val testing_mode : bool
 
 val threadsafe_aliases : Yojson.Basic.t
+
+val topl_max_conjuncts : int
+
+val topl_max_disjuncts : int
 
 val topl_properties : string list
 
@@ -601,13 +657,19 @@ val unsafe_malloc : bool
 
 val worklist_mode : int
 
+val workspace : string option
+
 val write_dotty : bool
 
 val write_html : bool
 
 val write_html_whitelist_regex : string list
 
+val write_website : string option
+
 val xcode_developer_dir : string option
+
+val xcode_isysroot_suffix : string option
 
 val xcpretty : bool
 
@@ -627,12 +689,9 @@ val is_in_custom_symbols : string -> string -> bool
 val java_package_is_external : string -> bool
 (** Check if a Java package is external to the repository *)
 
-val execution_id : Int64.t
+val scuba_execution_id : Int64.t option
+(** a random number to (hopefully) uniquely identify this run *)
 
 (** {2 Global variables with initial values specified by command-line options} *)
 
-val clang_compilation_dbs : [`Escaped of string | `Raw of string] list ref
-
-(** {2 Command Line Interface Documentation} *)
-
-val print_usage_exit : unit -> 'a
+val clang_compilation_dbs : [`Escaped of string | `Raw of string] list

@@ -212,7 +212,12 @@ end = struct
         actuals
     in
     let guard_action ~f ~error =
-      match actuals with [guard] -> f guard | _ -> log_parse_error error ; NoEffect
+      match actuals with
+      | [guard] ->
+          f guard
+      | _ ->
+          log_parse_error error ;
+          NoEffect
     in
     let fst_arg = match actuals with x :: _ -> [x] | _ -> [] in
     if is_std_lock pname then Lock actuals
@@ -295,59 +300,43 @@ let get_current_class_and_annotated_superclasses is_annot tenv pname =
   | Procname.Java java_pname ->
       let current_class = Procname.Java.get_class_type_name java_pname in
       let annotated_classes =
-        PatternMatch.find_superclasses_with_attributes is_annot tenv current_class
+        PatternMatch.Java.find_superclasses_with_attributes is_annot tenv current_class
       in
       Some (current_class, annotated_classes)
   | _ ->
       None
 
 
-let ui_matcher_records =
-  let open MethodMatcher in
-  let fragment_methods =
-    (* sort police: this is in lifecycle order *)
-    [ "onAttach"
-    ; "onCreate"
-    ; "onCreateView"
-    ; "onActivityCreated"
-    ; "onStart"
-    ; "onResume"
-    ; "onPause"
-    ; "onStop"
-    ; "onDestroyView"
-    ; "onDestroy"
-    ; "onDetach" ]
+let is_android_lifecycle_method tenv pname =
+  let package_starts_with_android procname =
+    Procname.get_class_type_name procname
+    |> Option.exists ~f:(fun typename ->
+           match (typename : Typ.Name.t) with
+           | CUnion _ | CStruct _ | CppClass _ | CSharpClass _ | ObjcClass _ | ObjcProtocol _ ->
+               false
+           | JavaClass java_class_name ->
+               JavaClassName.package java_class_name
+               |> Option.exists ~f:(String.is_prefix ~prefix:"android") )
   in
-  (* search_superclasses is true by default in how [default] is treated *)
-  [ {default with classname= "android.support.v4.app.Fragment"; methods= fragment_methods}
-  ; {default with classname= "android.app.Fragment"; methods= fragment_methods}
-  ; {default with classname= "androidx.fragment.app.Fragment"; methods= fragment_methods}
-  ; {default with classname= "android.content.ContentProvider"; methods= ["onCreate"]}
-  ; {default with classname= "android.content.BroadcastReceiver"; methods= ["onReceive"]}
-  ; { default with
-      classname= "android.app.Service"
-    ; methods= ["onBind"; "onCreate"; "onDestroy"; "onStartCommand"] }
-  ; {default with classname= "android.app.Application"; methods= ["onCreate"]}
-  ; { default with
-      classname= "android.app.Activity"
-    ; methods= ["onCreate"; "onStart"; "onRestart"; "onResume"; "onPause"; "onStop"; "onDestroy"] }
-  ; { default with
-      (* according to Android documentation, *all* methods of the View class run on UI thread, but
-         let's be a bit conservative and catch all methods that start with "on".
-         https://developer.android.com/reference/android/view/View.html *)
-      method_prefix= true
-    ; classname= "android.view.View"
-    ; methods= ["on"] }
-  ; { default with
-      classname= "android.content.ServiceConnection"
-    ; methods= ["onBindingDied"; "onNullBinding"; "onServiceConnected"; "onServiceDisconnected"] }
-  ]
-
-
-let is_modeled_ui_method =
-  let matchers = List.map ui_matcher_records ~f:MethodMatcher.of_record in
-  (* we pass an empty actuals list because all matching is done on class and method name here *)
-  fun tenv pname -> MethodMatcher.of_list matchers tenv pname []
+  let overrides_android_method tenv pname =
+    PatternMatch.override_exists package_starts_with_android tenv pname
+  in
+  let method_starts_with_on pname = Procname.get_method pname |> String.is_prefix ~prefix:"on" in
+  let is_whitelisted pname =
+    match Procname.get_method pname with
+    (* [IntentService.onHandleIntent] is an exception *)
+    | "onHandleIntent" ->
+        true
+    | _ ->
+        false
+  in
+  match (pname : Procname.t) with
+  | C _ | Linters_dummy_method | Block _ | ObjC_Cpp _ | CSharp _ | WithBlockParameters _ ->
+      false
+  | Java _ ->
+      method_starts_with_on pname
+      && (not (is_whitelisted pname))
+      && overrides_android_method tenv pname
 
 
 type annotation_trail = DirectlyAnnotated | Override of Procname.t | SuperClass of Typ.name
@@ -387,12 +376,12 @@ let annotated_as_uithread_equivalent tenv pname =
 
 
 let runs_on_ui_thread tenv pname =
-  is_modeled_ui_method tenv pname || annotated_as_uithread_equivalent tenv pname
+  is_android_lifecycle_method tenv pname || annotated_as_uithread_equivalent tenv pname
 
 
 let is_recursive_lock_type = function
-  | Typ.CppClass (qname, _) ->
-      Clang.is_recursive_lock_type qname
+  | Typ.CppClass {name} ->
+      Clang.is_recursive_lock_type name
   | _ ->
       (* non-C++ lock types are always considered recursive *)
       true

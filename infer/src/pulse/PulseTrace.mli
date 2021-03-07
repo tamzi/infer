@@ -16,7 +16,7 @@ type t =
       ; location: Location.t  (** location of the call event *)
       ; history: ValueHistory.t  (** the call involves a value with this prior history *)
       ; in_call: t  (** last step of the trace is in a call to [f] made at [location] *) }
-[@@deriving compare]
+[@@deriving compare, equal]
 
 val pp : pp_immediate:(F.formatter -> unit) -> F.formatter -> t -> unit
 
@@ -34,3 +34,6 @@ val add_to_errlog :
   -> t
   -> Errlog.loc_trace_elem list
   -> Errlog.loc_trace_elem list
+
+val find_map : f:(ValueHistory.event -> 'a option) -> t -> 'a option
+(** Like [List.find_map], but applies to value histories. *)

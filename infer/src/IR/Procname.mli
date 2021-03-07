@@ -10,6 +10,33 @@ module F = Format
 
 (** Module for Procedure Names. *)
 
+(** Type of csharp procedure names. *)
+module CSharp : sig
+  type kind =
+    | Non_Static
+        (** in Java, procedures called with invokevirtual, invokespecial, and invokeinterface *)
+    | Static  (** in Java, procedures called with invokestatic *)
+
+  type t [@@deriving compare]
+
+  val constructor_method_name : string
+
+  val get_method : t -> string
+  (** Return the method name of a csharp procedure name. *)
+
+  val get_class_type_name : t -> Typ.Name.t
+  (** Return the class name as a typename of a java procedure name. *)
+
+  val get_return_typ : t -> Typ.t
+  (** Return the return type of [pname_csharp]. return Tvoid if there's no return type *)
+
+  val get_class_name : t -> string
+  (** Return the class name of a java procedure name. *)
+
+  val is_generated : t -> bool
+  (** Check if the proc name comes from generated code *)
+end
+
 (** Type of java procedure names. *)
 module Java : sig
   type kind =
@@ -19,7 +46,7 @@ module Java : sig
 
   type t [@@deriving compare]
 
-  type java_type = JavaSplitName.t [@@deriving compare, equal]
+  val to_simplified_string : ?withclass:bool -> t -> string
 
   val constructor_method_name : string
 
@@ -28,10 +55,10 @@ module Java : sig
   val replace_method_name : string -> t -> t
   (** Replace the method name of an existing java procname. *)
 
-  val replace_parameters : java_type list -> t -> t
+  val replace_parameters : Typ.t list -> t -> t
   (** Replace the parameters of a java procname. *)
 
-  val replace_return_type : java_type -> t -> t
+  val replace_return_type : Typ.t -> t -> t
   (** Replace the method of a java procname. *)
 
   val get_class_name : t -> string
@@ -49,7 +76,7 @@ module Java : sig
   val get_method : t -> string
   (** Return the method name of a java procedure name. *)
 
-  val get_parameters : t -> java_type list
+  val get_parameters : t -> Typ.t list
   (** Return the parameters of a java procedure name. *)
 
   val get_return_typ : t -> Typ.t
@@ -63,10 +90,7 @@ module Java : sig
       from a nested class. *)
 
   val is_autogen_method : t -> bool
-  (** Check if the procedure name is of an auto-generated method containing '$'. *)
-
-  val is_autogen_method_name : string -> bool
-  (** Check if the string of procedure name is of an auto-generated method containing '$'. *)
+  (** Check if the procedure name is of an auto-generated/synthetic method. *)
 
   val is_anonymous_inner_class_constructor_exn : t -> bool
   (** Check if the procedure name is an anonymous inner class constructor. Throws if it is not a
@@ -105,7 +129,7 @@ module Parameter : sig
   type clang_parameter = Typ.Name.t option [@@deriving compare, equal]
 
   (** Type for parameters in procnames, for java and clang. *)
-  type t = JavaParameter of Java.java_type | ClangParameter of clang_parameter
+  type t = JavaParameter of Typ.t | ClangParameter of clang_parameter | CSharpParameter of Typ.t
   [@@deriving compare, equal]
 
   val of_typ : Typ.t -> clang_parameter
@@ -192,15 +216,16 @@ end
     [foo_my_block() {my_block(); }] where foo_my_block is created with WithBlockParameters (foo,
     [my_block]) *)
 type t =
+  | CSharp of CSharp.t
   | Java of Java.t
   | C of C.t
   | Linters_dummy_method
   | Block of Block.t
   | ObjC_Cpp of ObjC_Cpp.t
-  | WithBlockParameters of t * Block.block_name list
-[@@deriving compare]
+  | WithBlockParameters of t * Block.t list
+[@@deriving compare, yojson_of]
 
-val block_name_of_procname : t -> Block.block_name
+val block_of_procname : t -> Block.t
 
 val equal : t -> t -> bool
 
@@ -224,18 +249,18 @@ val is_java_autogen_method : t -> bool
 
 val is_objc_method : t -> bool
 
-module Hash : Caml.Hashtbl.S with type key = t
 (** Hash tables with proc names as keys. *)
+module Hash : Caml.Hashtbl.S with type key = t
 
 module LRUHash : LRUHashtbl.S with type key = t
 
 module HashQueue : Hash_queue.S with type key = t
 
-module Map : PrettyPrintable.PPMap with type key = t
 (** Maps from proc names. *)
+module Map : PrettyPrintable.PPMap with type key = t
 
-module Set : PrettyPrintable.PPSet with type elt = t
 (** Sets of proc names. *)
+module Set : PrettyPrintable.PPSet with type elt = t
 
 module SQLite : sig
   val serialize : t -> Sqlite3.Data.t
@@ -254,13 +279,30 @@ end
 
 val make_java :
      class_name:Typ.Name.t
-  -> return_type:Java.java_type option
+  -> return_type:Typ.t option
   -> method_name:string
-  -> parameters:Java.java_type list
+  -> parameters:Typ.t list
   -> kind:Java.kind
   -> unit
   -> t
 (** Create a Java procedure name. *)
+
+val make_csharp :
+     class_name:Typ.Name.t
+  -> return_type:Typ.t option
+  -> method_name:string
+  -> parameters:Typ.t list
+  -> kind:CSharp.kind
+  -> unit
+  -> t
+(** Create a CSharp procedure name. *)
+
+val make_objc_dealloc : Typ.Name.t -> t
+(** Create a Objective-C dealloc name. This is a destructor for an Objective-C class. This procname
+    is given by the class name, since it is always an instance method with the name "dealloc" *)
+
+val make_objc_copyWithZone : is_mutable:bool -> Typ.Name.t -> t
+(** Create an Objective-C method for copyWithZone: or mutableCopyWithZone: according to is_mutable. *)
 
 val empty_block : t
 (** Empty block name. *)
@@ -274,21 +316,27 @@ val get_method : t -> string
 val is_objc_block : t -> bool
 (** Return whether the procname is a block procname. *)
 
+val is_objc_dealloc : t -> bool
+(** Return whether the dealloc method of an Objective-C class. *)
+
 val is_c_method : t -> bool
 (** Return true this is an Objective-C/C++ method name. *)
-
-val is_clang : t -> bool
-(** Return true if this is a C, C++, or Objective-C procedure name *)
 
 val is_constructor : t -> bool
 (** Check if this is a constructor. *)
 
+val is_csharp : t -> bool
+(** Check if this is a CSharp procedure name. *)
+
 val is_java : t -> bool
 (** Check if this is a Java procedure name. *)
 
-val with_block_parameters : t -> Block.block_name list -> t
+val as_java_exn : explanation:string -> t -> Java.t
+(** Converts to a Java.t. Throws if [is_java] is false *)
+
+val with_block_parameters : t -> Block.t list -> t
 (** Create a procedure name instantiated with block parameters from a base procedure name and a list
-    of block procedure names (the arguments). *)
+    of block procedures. *)
 
 val objc_cpp_replace_method_name : t -> string -> t
 
@@ -337,3 +385,5 @@ val to_filename : t -> string
 
 val get_qualifiers : t -> QualifiedCppName.t
 (** get qualifiers of C/objc/C++ method/function *)
+
+module Normalizer : HashNormalizer.S with type t = t
